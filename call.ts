@@ -131,6 +131,48 @@ async function openPr(
   return { number: number(record(made.body, "the new PR").number, "the new PR's number") };
 }
 
+// Answers `merge pr`: merges the PR, but only while its head is still the commit you saw
+// approved, so a push after you looked is never merged unseen. It merges in the first way the
+// repository allows, of a merge commit, squash and rebase. Answers null once merged, or with
+// why GitHub refused, such as a conflict, a rule on the branch or a head that moved, which
+// Skelcrew shows you. The ways allowed come from GraphQL, which tells them to any reader.
+async function mergePr(
+  repository: string,
+  pr: number,
+  commit: string,
+): Promise<{ refused: string } | null> {
+  // The owner and name passed repositoryOf's check, so they hold nothing that ends a string.
+  const [owner, name] = repository.split("/");
+  const read = await graphql(
+    repository,
+    `read how ${repository} merges`,
+    `query { repository(owner: "${owner}", name: "${name}") { mergeCommitAllowed squashMergeAllowed rebaseMergeAllowed } }`,
+  );
+  const allows = record(record(read, "GitHub's answer").repository, repository);
+  const method =
+    allows.mergeCommitAllowed === true
+      ? "merge"
+      : allows.squashMergeAllowed === true
+        ? "squash"
+        : allows.rebaseMergeAllowed === true
+          ? "rebase"
+          : null;
+  if (method === null) return { refused: `${repository} allows no way to merge` };
+  // GitHub answers 405 for a PR it won't merge, 409 for a head that moved, and 422 for a
+  // merge it can't make. Each is a refusal to show, not a failure of the plugin.
+  const merged = await rest(
+    repository,
+    `merge #${pr}`,
+    "PUT",
+    `/pulls/${pr}/merge`,
+    { sha: commit, merge_method: method },
+    [405, 409, 422],
+  );
+  if (merged.status === 200) return null;
+  const said = record(merged.body ?? {}, "GitHub's answer").message;
+  return { refused: typeof said === "string" ? said : `GitHub answered ${merged.status}` };
+}
+
 // Answers `close pr`: posts the comment when there is one, so the PR says why it closed, then
 // closes the PR and deletes its branch, as skel's sc rm removes the thread behind it. A branch
 // already gone, such as one GitHub deleted itself, counts as deleted.
@@ -325,6 +367,11 @@ async function answer(question: Record<string, unknown>): Promise<unknown> {
       title: text(question.title, "the title"),
       body: text(question.body, "the body"),
     });
+  if (ask === "merge pr") {
+    const commit = text(question.commit, "the commit");
+    if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`${commit} isn't a commit`);
+    return mergePr(repository, numberOf(question.pr, "a PR's number"), commit);
+  }
   if (ask === "close pr") {
     // Only what a branch skel names holds, so nothing else reaches a GitHub path.
     const branch = text(question.branch, "the branch");

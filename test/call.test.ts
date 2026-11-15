@@ -294,6 +294,7 @@ const pull = (n: number, updatedAt: string) => ({
   mergeable: "CONFLICTING",
   baseRefName: "main",
   headRefName: `skel/12-fix-login`,
+  headRefOid: "a".repeat(40),
   reviews: {
     nodes: [
       {
@@ -430,6 +431,7 @@ test("changed with no next brings everything open, and the PRs skel watches, in 
     created: "2026-11-02T10:00:00Z",
     updated: "2026-11-08T10:00:00Z",
     branch: "skel/12-fix-login",
+    head: "a".repeat(40),
     base: "main",
     conflicts: true,
     checks: [

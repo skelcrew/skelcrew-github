@@ -95,7 +95,7 @@ An **item** is a task or a PR:
 }
 ```
 
-A PR has `kind: "pr"`, no `closes`, and adds `branch`, `base`, `conflicts`, `checks` (each with
+A PR has `kind: "pr"`, no `closes`, and adds `branch`, `head` (its head commit), `base`, `conflicts`, `checks` (each with
 `name`, `id` or null, and `state`: `running`, `passed`, `failed` or `cancelled`), `reviews`
 (each with `id`, `text`, `author`, `verdict` and `lines`) and `comments` (each with `id`,
 `text` and `author`). Its `state` can be `merged`.

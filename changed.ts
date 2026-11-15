@@ -38,6 +38,7 @@ export type Item =
   | ({
       kind: "pr";
       branch: string;
+      head: string;
       base: string;
       conflicts: boolean;
       checks: { name: string; id: string | null; state: CheckState }[];
@@ -50,7 +51,7 @@ export type Item =
 
 // What a poll reads of a PR. A PR skel watches gets its last 50 reviews, and any other its last
 // 10, since GitHub charges a query for every review it may send, times the PRs asked for.
-const pullFields = (reviews: number) => `state mergeable baseRefName headRefName
+const pullFields = (reviews: number) => `state mergeable baseRefName headRefName headRefOid
   reviews(last: ${reviews}) { nodes { databaseId state body author { __typename login }
     comments(first: 50) { nodes { path line body } } } }
   comments(last: 50) { nodes { databaseId body author { __typename login } } }
@@ -122,7 +123,8 @@ function taskOf(node: Record<string, unknown>, you: string): Item {
   return { kind: "task", ...common, state, closes: `Closes #${common.id}` };
 }
 
-// Returns a PR as an item, with only its head commit's checks, as only those count.
+// Returns a PR as an item, with its head commit, which Skelcrew merges only while it is still the
+// head, and only that commit's checks, as only those count.
 function pullOf(node: Record<string, unknown>, you: string): Item {
   const [head] = nodes(node.commits, "commits");
   const rollup = head === undefined ? null : record(record(head, "a commit").commit, "a commit");
@@ -135,6 +137,7 @@ function pullOf(node: Record<string, unknown>, you: string): Item {
     ...commonOf(node, you),
     state: node.state === "OPEN" ? "open" : node.state === "MERGED" ? "merged" : "closed",
     branch: text(node.headRefName, "a branch"),
+    head: text(node.headRefOid, "a head commit"),
     base: text(node.baseRefName, "a base"),
     conflicts: node.mergeable === "CONFLICTING",
     checks: contexts.map((value) => {

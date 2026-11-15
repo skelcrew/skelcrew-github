@@ -68,6 +68,7 @@ Each question names its kind in `ask`. A repository is named `owner/name`, its k
 | `took` | `repository`, `task` | `{ took }`, after reacting with 👀: `true` if this call added the reaction, `false` if the app's was there already, as when Skelcrew on another machine took the issue first |
 | `assign` | `repository`, `task`, `on` (`true` or `false`) | With `on`, `{ assigned }`: `true` if this call made you an assignee of the issue, `false` if you were one already. GitHub leaves out someone it won't assign without an error, so that fails. Without it, `null`, after taking you off. You are the GitHub login the setup signed in as, and the app makes the change. Other assignees stay |
 | `open pr` | `repository`, `branch`, `base`, `title`, `body` | `{ number }`, of the PR already open from the branch if there is one |
+| `merge pr` | `repository`, `pr`, `commit` | `null` once merged, or `{ refused }` with GitHub's reason, such as a conflict or a rule on the branch. It merges only while the PR's head is still `commit`, the one you saw approved, in the first way the repository allows, of a merge commit, squash and rebase. Only you merge, from Skelcrew's screen |
 | `close pr` | `repository`, `pr`, `branch`, `comment` or null | `null`, after posting the comment if there is one, closing the PR and deleting the branch |
 | `review` | `repository`, `pr`, `commit`, `verdict` (`approve` or `changes`), `body` | `{ id }` |
 | `status` | `repository`, `commit`, `state` (`pending`, `success` or `failure`), `description` | `null`, after setting the `skelcrew/check` status check |
@@ -95,7 +96,7 @@ An **item** is a task or a PR:
 }
 ```
 
-A PR has `kind: "pr"`, no `closes`, and adds `branch`, `base`, `conflicts`, `checks` (each with
+A PR has `kind: "pr"`, no `closes`, and adds `branch`, `head` (its head commit), `base`, `conflicts`, `checks` (each with
 `name`, `id` or null, and `state`: `running`, `passed`, `failed` or `cancelled`), `reviews`
 (each with `id`, `text`, `author`, `verdict` and `lines`) and `comments` (each with `id`,
 `text` and `author`). Its `state` can be `merged`.

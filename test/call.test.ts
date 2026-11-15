@@ -294,6 +294,7 @@ const pull = (n: number, updatedAt: string) => ({
   mergeable: "CONFLICTING",
   baseRefName: "main",
   headRefName: `skel/12-fix-login`,
+  headRefOid: "a".repeat(40),
   reviews: {
     nodes: [
       {
@@ -430,6 +431,7 @@ test("changed with no next brings everything open, and the PRs skel watches, in 
     created: "2026-11-02T10:00:00Z",
     updated: "2026-11-08T10:00:00Z",
     branch: "skel/12-fix-login",
+    head: "a".repeat(40),
     base: "main",
     conflicts: true,
     checks: [
@@ -657,6 +659,81 @@ test("close pr comments, closes the PR and deletes its branch, and with no comme
   await expect(ask(question)).rejects.toThrow("Cannot delete this protected branch");
 
   await expect(ask({ ...question, branch: "../../hooks" })).rejects.toThrow("isn't a branch");
+});
+
+// A GitHub where simon/app allows the ways to merge in `allowed`, and PR 31's head is `head`.
+// A merge at another commit is refused, as GitHub refuses one whose head moved, and so is a
+// way the repository doesn't allow.
+function merging(allowed: string[], head: string, refusal?: [number, string]) {
+  return (asked: Asked): Response | undefined => {
+    if (asked.path === "/api/graphql")
+      return json({
+        data: {
+          repository: {
+            mergeCommitAllowed: allowed.includes("merge"),
+            squashMergeAllowed: allowed.includes("squash"),
+            rebaseMergeAllowed: allowed.includes("rebase"),
+          },
+        },
+      });
+    if (asked.method !== "PUT" || asked.path !== "/api/repos/simon/app/pulls/31/merge")
+      return world(asked);
+    const { sha, merge_method } = JSON.parse(asked.body);
+    if (refusal) return json({ message: refusal[1] }, refusal[0]);
+    if (sha !== head)
+      return json({ message: "Head branch was modified. Review and try the merge again." }, 409);
+    if (!allowed.includes(merge_method))
+      return json({ message: "Merge commits are not allowed on this repository." }, 405);
+    return json({ sha: "f".repeat(40), merged: true, message: "Pull Request successfully merged" });
+  };
+}
+
+const seenApproved = "c".repeat(40);
+const mergeQuestion = { ask: "merge pr", repository: "simon/app", pr: 31, commit: seenApproved };
+const mergesSent = () => sent("/api/repos/simon/app/pulls/31/merge");
+
+test("merge pr merges the PR at the commit you saw approved, with a merge commit where allowed", async () => {
+  fake.route = merging(["merge", "squash", "rebase"], seenApproved);
+  expect(await ask(mergeQuestion)).toBeNull();
+  expect(mergesSent()).toEqual([{ sha: seenApproved, merge_method: "merge" }]);
+  const graphql = fake.asked.find((a) => a.path === "/api/graphql");
+  expect(graphql?.auth).toBe("Bearer ghs_app");
+  expect(JSON.parse(graphql?.body ?? "").query).toContain(
+    'repository(owner: "simon", name: "app")',
+  );
+});
+
+test("merge pr squashes where merge commits aren't allowed, and rebases where only that is", async () => {
+  fake.route = merging(["squash", "rebase"], seenApproved);
+  expect(await ask(mergeQuestion)).toBeNull();
+  fake.route = merging(["rebase"], seenApproved);
+  expect(await ask(mergeQuestion)).toBeNull();
+  expect(mergesSent().map((body) => body.merge_method)).toEqual(["squash", "rebase"]);
+});
+
+// What GitHub refuses is your call to make, so its reason goes back to the screen as it is.
+test("merge pr answers why GitHub wouldn't merge: a head that moved, a conflict or a rule", async () => {
+  fake.route = merging(["merge"], "d".repeat(40));
+  expect(await ask(mergeQuestion)).toEqual({
+    refused: "Head branch was modified. Review and try the merge again.",
+  });
+  fake.route = merging(["merge"], seenApproved, [405, "Pull Request is not mergeable"]);
+  expect(await ask(mergeQuestion)).toEqual({ refused: "Pull Request is not mergeable" });
+  fake.route = merging(["merge"], seenApproved, [
+    405,
+    "At least 2 approving reviews are required by reviewers with write access.",
+  ]);
+  expect(await ask(mergeQuestion)).toEqual({
+    refused: "At least 2 approving reviews are required by reviewers with write access.",
+  });
+  fake.route = merging([], seenApproved);
+  expect(await ask(mergeQuestion)).toEqual({ refused: "simon/app allows no way to merge" });
+});
+
+test("merge pr refuses a commit that isn't one, without asking GitHub", async () => {
+  fake.route = merging(["merge"], seenApproved);
+  await expect(ask({ ...mergeQuestion, commit: "main" })).rejects.toThrow("main isn't a commit");
+  expect(mergesSent()).toEqual([]);
 });
 
 test("review posts a review that only comments, with the verdict first", async () => {

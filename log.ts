@@ -40,26 +40,60 @@ export function linesOf(log: string): string[] {
     .map((line) => line.replace(/\r$/, "").replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, ""));
 }
 
-// Returns the lines of the step that failed. A step's log starts with ##[group]Run, and the
-// post-job steps, which come last, with "Post job cleanup." or "Cleaning up orphan processes". The step that
-// failed is the first with an ##[error] line. When none has one, it is everything before the
-// post-job steps.
-export function failedStep(lines: string[]): string[] {
-  const steps: string[][] = [[]];
+// A step of the job, as GitHub's jobs API reports it. A step that failed but was let go on,
+// with continue-on-error, has the conclusion "success", so only the one that failed the job has
+// "failure".
+export type Step = { name: string; number: number; conclusion: string | null };
+
+// Returns the job's steps from GitHub's answer for the job.
+export function stepsOf(job: unknown): Step[] {
+  return list(record(job, "the job").steps ?? [], "the job's steps").map((each) => {
+    const step = record(each, "a step");
+    return {
+      name: typeof step.name === "string" ? step.name : "",
+      number: typeof step.number === "number" ? step.number : 0,
+      conclusion: typeof step.conclusion === "string" ? step.conclusion : null,
+    };
+  });
+}
+
+// Returns the lines of the step that failed the job. In the log, the job's set-up comes first,
+// then each step from a ##[group]Run line, then the post-job steps, from "Post job cleanup." or
+// "Cleaning up orphan processes". GitHub names a step without a name of its own by that same
+// Run line, so the step that failed is found by its name, and runs to the next later step's
+// line or the post-job steps. A step with a name of its own is found by its number instead,
+// when that part of the log has an ##[error] line. Without the steps, or when neither finds it,
+// it is the last part before the post-job steps with an ##[error] line, as a job stops at the
+// step that fails it, or failing that, everything before the post-job steps.
+export function failedStep(lines: string[], steps: Step[] = []): string[] {
+  const parts: string[][] = [[]];
   const post: boolean[] = [false];
   for (const line of lines) {
     const isPost = /^(Post job cleanup\.|Cleaning up orphan processes)/.test(line);
     if (/^##\[group\]Run /.test(line) || isPost) {
-      steps.push([]);
+      parts.push([]);
       post.push(isPost || post.at(-1) === true);
     }
-    steps[steps.length - 1]?.push(line);
+    parts[parts.length - 1]?.push(line);
   }
-  const failed = steps.findIndex(
-    (step, n) => !post[n] && step.some((l) => l.startsWith("##[error]")),
-  );
-  if (failed !== -1) return steps[failed] ?? [];
-  return steps.filter((_, n) => !post[n]).flat();
+  const erred = (n: number) => parts[n]?.some((l) => l.startsWith("##[error]")) === true;
+  const failed = steps.find((step) => step.conclusion === "failure");
+  if (failed !== undefined) {
+    const header = (step: Step) => `##[group]${step.name}`;
+    const later = new Set(steps.filter((s) => s.number > failed.number).map(header));
+    const named = parts.map((part, n) => (!post[n] && part[0] === header(failed) ? n : -1));
+    const start = named.find((n) => n !== -1 && erred(n)) ?? named.find((n) => n !== -1);
+    if (start !== undefined) {
+      let end = start + 1;
+      while (end < parts.length && !post[end] && !later.has(parts[end]?.[0] ?? "")) end++;
+      return parts.slice(start, end).flat();
+    }
+    const at = failed.number - 1;
+    if (!post[at] && erred(at)) return parts[at] ?? [];
+  }
+  const last = parts.findLastIndex((_, n) => !post[n] && erred(n));
+  if (last !== -1) return parts[last] ?? [];
+  return parts.filter((_, n) => !post[n]).flat();
 }
 
 // Returns the lines that say what failed, each with a few lines around it. Lines already kept
@@ -107,16 +141,38 @@ export function within(parts: { heading: string; text: string; fromEnd?: boolean
   return answer;
 }
 
+// Returns the check's failure annotations from every page GitHub has, as a check can have
+// pages of warnings before its failures, until there are more than the answer has room for.
+async function failureAnnotations(repository: string, check: string): Promise<string[]> {
+  const notes: string[] = [];
+  for (let page = 1; page <= 30; page++) {
+    const got = await rest(
+      repository,
+      `read check ${check}'s annotations`,
+      "GET",
+      `/check-runs/${check}/annotations?per_page=100&page=${page}`,
+      undefined,
+      [404],
+    );
+    if (got.status !== 200) break;
+    const all = list(got.body, "the check's annotations");
+    notes.push(...annotations(all));
+    if (all.length < 100 || notes.join("\n\n").length >= limit) break;
+  }
+  return notes;
+}
+
 export async function log(repository: string, check: string): Promise<{ log: string }> {
-  const noted = await rest(
+  const notes = await failureAnnotations(repository, check);
+  const job = await rest(
     repository,
-    `read check ${check}'s annotations`,
+    `read job ${check}`,
     "GET",
-    `/check-runs/${check}/annotations?per_page=100`,
+    `/actions/jobs/${check}`,
     undefined,
     [404],
   );
-  const notes = noted.status === 200 ? annotations(noted.body) : [];
+  const steps = job.status === 200 ? stepsOf(job.body) : [];
   const token = await repositoryToken(repository);
   const response = await fetch(
     `https://api.github.com/repos/${repository}/actions/jobs/${check}/logs`,
@@ -132,7 +188,7 @@ export async function log(repository: string, check: string): Promise<{ log: str
     const lines = linesOf(await response.text());
     parts.push({
       heading: "Lines about failures from the log of the step that failed:",
-      text: failures(failedStep(lines)).join("\n"),
+      text: failures(failedStep(lines, steps)).join("\n"),
     });
     if (parts.every((part) => part.text === ""))
       return {

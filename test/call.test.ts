@@ -776,14 +776,19 @@ test("status sets the skelcrew/check status check, cut to what GitHub takes", as
 const recorded = (name: string) => readFileSync(join(import.meta.dir, "recorded", name), "utf8");
 
 // A failed GitHub Actions job: its annotations as GitHub answers them, and its log, where the
-// post-job cleanup follows the failure.
-function failedJob(annotations: unknown, logText: string) {
-  return (asked: Asked) =>
-    asked.path === "/api/repos/simon/app/check-runs/9/annotations?per_page=100"
-      ? json(annotations)
-      : asked.path === "/api/repos/simon/app/actions/jobs/9/logs"
-        ? new Response(logText)
-        : world(asked);
+// post-job cleanup follows the failure. `annotations` is one page, or a list of pages, and
+// `steps` the job's steps, which a job not from GitHub Actions has none of.
+function failedJob(annotations: unknown[], logText: string, steps?: unknown[]) {
+  const pages = Array.isArray(annotations[0]) ? annotations : [annotations];
+  return (asked: Asked) => {
+    const page = asked.path.match(
+      /^\/api\/repos\/simon\/app\/check-runs\/9\/annotations\?per_page=100&page=(\d+)$/,
+    );
+    if (page) return json(pages[Number(page[1]) - 1] ?? []);
+    if (asked.path === "/api/repos/simon/app/actions/jobs/9/logs") return new Response(logText);
+    if (asked.path === "/api/repos/simon/app/actions/jobs/9" && steps) return json({ steps });
+    return world(asked);
+  };
 }
 
 const askLog = async () =>
@@ -818,6 +823,75 @@ test("log answers the failure annotations, then what failed in the failed step, 
       "##[error]Process completed with exit code 1.",
     ].join("\n"),
   );
+});
+
+// A job whose lint step failed but was let go on, with continue-on-error, before its tests
+// failed it.
+const toleratedThenRequired = [
+  "2026-11-09T10:00:00.0000000Z Current runner version: '2.329.0'",
+  "2026-11-09T10:00:01.0000000Z ##[group]Run bun run lint",
+  "2026-11-09T10:00:01.0000000Z ##[endgroup]",
+  "2026-11-09T10:00:02.0000000Z (fail) lint: unused import in a.ts",
+  "2026-11-09T10:00:02.0000000Z ##[error]Process completed with exit code 1.",
+  "2026-11-09T10:00:03.0000000Z ##[group]Run bun test",
+  "2026-11-09T10:00:03.0000000Z ##[endgroup]",
+  "2026-11-09T10:00:04.0000000Z (pass) adds",
+  "2026-11-09T10:00:04.0000000Z (fail) subtracts",
+  "2026-11-09T10:00:04.0000000Z ##[error]Process completed with exit code 1.",
+  "2026-11-09T10:00:05.0000000Z Post job cleanup.",
+  "2026-11-09T10:00:05.0000000Z Error: something in the cleanup",
+].join("\n");
+
+const stepsOfIt = (testsName: string) => [
+  { name: "Set up job", number: 1, conclusion: "success" },
+  { name: "Run bun run lint", number: 2, conclusion: "success" },
+  { name: testsName, number: 3, conclusion: "failure" },
+  { name: "Post Run actions/checkout@v4", number: 4, conclusion: "success" },
+  { name: "Complete job", number: 5, conclusion: "success" },
+];
+
+const requiredFailure = [
+  "Lines about failures from the log of the step that failed:",
+  "(pass) adds",
+  "(fail) subtracts",
+  "##[error]Process completed with exit code 1.",
+].join("\n");
+
+test("log answers the step that failed the job, not an earlier one let go on, by its name", async () => {
+  fake.route = failedJob([], toleratedThenRequired, stepsOfIt("Run bun test"));
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log finds a failed step with a name of its own by its number", async () => {
+  fake.route = failedJob([], toleratedThenRequired, stepsOfIt("Tests"));
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log without the job's steps answers the last step with an error before the cleanup", async () => {
+  fake.route = failedJob([], toleratedThenRequired);
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log reads every page of annotations, so a failure after a page of warnings comes", async () => {
+  const warnings = Array.from({ length: 100 }, (_, n) => ({
+    path: "a.ts",
+    start_line: n + 1,
+    annotation_level: "warning",
+    title: "lint",
+    message: "unused",
+  }));
+  const failure = {
+    path: "test/b.test.ts",
+    start_line: 7,
+    annotation_level: "failure",
+    title: "subtracts",
+    message: "error: expected 1",
+  };
+  fake.route = failedJob([warnings, [failure]], "nothing to see");
+  expect(await askLog()).toBe(
+    "Annotations on the failed check (failing tests and their errors):\ntest/b.test.ts:7: subtracts\nerror: expected 1",
+  );
+  expect(fake.asked.filter((a) => a.path.includes("/annotations?")).length).toBe(2);
 });
 
 test("log keeps the annotations first and the whole answer within 3000 characters", async () => {

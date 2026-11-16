@@ -32,77 +32,129 @@ export function annotations(given: unknown): string[] {
   });
 }
 
-// Returns a job's log as lines, without the time GitHub puts in front of each.
-export function linesOf(log: string): string[] {
-  return log
-    .trimEnd()
-    .split("\n")
-    .map((line) => line.replace(/\r$/, "").replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z ?/, ""));
+// Returns a job's log as lines, without the time GitHub puts in front of each, and that time
+// for each line, in milliseconds, or null for a line without one.
+export function linesOf(log: string): { lines: string[]; times: (number | null)[] } {
+  const lines: string[] = [];
+  const times: (number | null)[] = [];
+  for (const raw of log.trimEnd().split("\n")) {
+    const line = raw.replace(/\r$/, "");
+    const time = line.match(/^(\d{4}-\d\d-\d\dT[\d:.]+Z) ?/);
+    lines.push(time ? line.slice(time[0].length) : line);
+    times.push(time?.[1] ? Date.parse(time[1]) : null);
+  }
+  return { lines, times };
 }
 
-// A step of the job, as GitHub's jobs API reports it. A step that failed but was let go on,
-// with continue-on-error, has the conclusion "success", so only the one that failed the job has
-// "failure".
-export type Step = { name: string; number: number; conclusion: string | null };
+// A step of the job, as GitHub's jobs API reports it, with when it started and completed, in
+// milliseconds. A step that failed but was let go on, with continue-on-error, has the
+// conclusion "success", so only the one that failed the job has "failure".
+export type Step = {
+  name: string;
+  number: number;
+  conclusion: string | null;
+  started: number | null;
+  completed: number | null;
+};
 
 // Returns the job's steps from GitHub's answer for the job.
 export function stepsOf(job: unknown): Step[] {
+  const time = (value: unknown) => {
+    const ms = typeof value === "string" ? Date.parse(value) : Number.NaN;
+    return Number.isNaN(ms) ? null : ms;
+  };
   return list(record(job, "the job").steps ?? [], "the job's steps").map((each) => {
     const step = record(each, "a step");
     return {
       name: typeof step.name === "string" ? step.name : "",
       number: typeof step.number === "number" ? step.number : 0,
       conclusion: typeof step.conclusion === "string" ? step.conclusion : null,
+      started: time(step.started_at),
+      completed: time(step.completed_at),
     };
   });
 }
 
 // Returns the lines of the step that failed the job. In the log, the job's set-up comes first,
 // then each step from a ##[group]Run line, then the post-job steps, from "Post job cleanup." or
-// "Cleaning up orphan processes". GitHub names a step without a name of its own by that same
-// Run line, so the step that failed is found by its name. A later step with a name of its own
-// doesn't show by it, so the step runs only to its first ##[error] line, which a failed step
-// ends with, including one that is an action of several steps, each with a Run line of its own.
-// It never runs past a later step's line or into the post-job steps. A step with a name of its own is found by its number instead,
-// when that part of the log has an ##[error] line. Without the steps, or when neither finds it,
-// it is the last part before the post-job steps with an ##[error] line, as a job stops at the
-// step that fails it, or failing that, everything before the post-job steps.
-export function failedStep(lines: string[], steps: Step[] = []): string[] {
-  const parts: string[][] = [[]];
-  const post: boolean[] = [false];
+// "Cleaning up orphan processes". A Run line doesn't mark a step reliably: an action of several
+// steps logs one for each, and a step with a name of its own shows by its command, not its
+// name. So the step that failed is found by its times, which the jobs API gives to the second:
+// the lines logged from the second it started to the second it completed. The steps on either
+// side may have logged in those seconds too, so it starts at its Run line, found by its name or
+// else the first in that time, and ends at its first ##[error] line, which a failed step ends
+// with. Without its times, it is found by its name alone, running to its first ##[error] line
+// but never past a later step's Run line or into the post-job steps. Without the steps, or when
+// neither finds it, it is the last part before the post-job steps with an ##[error] line, as a
+// job stops at the step that fails it, or failing that, everything before the post-job steps.
+export function failedStep(
+  lines: string[],
+  times: (number | null)[] = [],
+  steps: Step[] = [],
+): string[] {
+  const post: boolean[] = [];
+  let after = false;
   for (const line of lines) {
-    const isPost = /^(Post job cleanup\.|Cleaning up orphan processes)/.test(line);
-    if (/^##\[group\]Run /.test(line) || isPost) {
-      parts.push([]);
-      post.push(isPost || post.at(-1) === true);
-    }
-    parts[parts.length - 1]?.push(line);
+    if (/^(Post job cleanup\.|Cleaning up orphan processes)/.test(line)) after = true;
+    post.push(after);
   }
-  const erred = (n: number) => parts[n]?.some((l) => l.startsWith("##[error]")) === true;
+  const isRun = (n: number) => /^##\[group\]Run /.test(lines[n] ?? "");
+  const isError = (n: number) => (lines[n] ?? "").startsWith("##[error]");
+  const firstFrom = (from: number, to: number, found: (n: number) => boolean) => {
+    for (let n = from; n <= to; n++) if (found(n)) return n;
+    return -1;
+  };
   const failed = steps.find((step) => step.conclusion === "failure");
+  const header = (step: Step) => `##[group]${step.name}`;
+  if (failed?.started != null && failed.completed != null) {
+    const second = (ms: number) => Math.floor(ms / 1000);
+    const from = second(failed.started);
+    const to = second(failed.completed);
+    const inside = (n: number) => {
+      const time = times[n];
+      return !post[n] && time != null && second(time) >= from && second(time) <= to;
+    };
+    const lo = firstFrom(0, lines.length - 1, inside);
+    if (lo !== -1) {
+      let hi = lo;
+      for (let n = lo; n < lines.length; n++) if (inside(n)) hi = n;
+      let start = firstFrom(lo, hi, (n) => lines[n] === header(failed));
+      if (start === -1) start = firstFrom(lo, hi, isRun);
+      if (start === -1) start = lo;
+      const end = firstFrom(start, hi, isError);
+      return lines.slice(start, (end === -1 ? hi : end) + 1);
+    }
+  }
   if (failed !== undefined) {
-    const header = (step: Step) => `##[group]${step.name}`;
     const later = new Set(steps.filter((s) => s.number > failed.number).map(header));
-    const named = parts.map((part, n) => (!post[n] && part[0] === header(failed) ? n : -1));
-    const start = named.find((n) => n !== -1 && erred(n)) ?? named.find((n) => n !== -1);
-    if (start !== undefined) {
+    const start = firstFrom(0, lines.length - 1, (n) => !post[n] && lines[n] === header(failed));
+    if (start !== -1) {
       let end = start;
-      while (!erred(end)) {
+      while (!isError(end)) {
         const next = end + 1;
-        if (next >= parts.length || post[next] || later.has(parts[next]?.[0] ?? "")) {
-          end = start;
+        if (next >= lines.length || post[next] || later.has(lines[next] ?? "")) {
+          end = firstFrom(start + 1, next - 1, isRun) - 1;
+          if (end < start) end = next - 1;
           break;
         }
         end = next;
       }
-      return parts.slice(start, end + 1).flat();
+      return lines.slice(start, end + 1);
     }
-    const at = failed.number - 1;
-    if (!post[at] && erred(at)) return parts[at] ?? [];
   }
-  const last = parts.findLastIndex((_, n) => !post[n] && erred(n));
+  const parts: string[][] = [[]];
+  const partPost: boolean[] = [false];
+  lines.forEach((line, n) => {
+    if (isRun(n) || (post[n] && !post[n - 1])) {
+      parts.push([]);
+      partPost.push(post[n] === true);
+    }
+    parts[parts.length - 1]?.push(line);
+  });
+  const erred = (part: string[]) => part.some((l) => l.startsWith("##[error]"));
+  const last = parts.findLastIndex((part, n) => !partPost[n] && erred(part));
   if (last !== -1) return parts[last] ?? [];
-  return parts.filter((_, n) => !post[n]).flat();
+  return parts.filter((_, n) => !partPost[n]).flat();
 }
 
 // Returns the lines that say what failed, each with a few lines around it. Lines already kept
@@ -194,10 +246,10 @@ export async function log(repository: string, check: string): Promise<{ log: str
     },
   ];
   if (response.ok) {
-    const lines = linesOf(await response.text());
+    const { lines, times } = linesOf(await response.text());
     parts.push({
       heading: "Lines about failures from the log of the step that failed:",
-      text: failures(failedStep(lines, steps)).join("\n"),
+      text: failures(failedStep(lines, times, steps)).join("\n"),
     });
     if (parts.every((part) => part.text === ""))
       return {

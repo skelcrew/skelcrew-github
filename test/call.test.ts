@@ -862,7 +862,7 @@ test("log answers the step that failed the job, not an earlier one let go on, by
   expect(await askLog()).toBe(requiredFailure);
 });
 
-test("log finds a failed step with a name of its own by its number", async () => {
+test("log without the failed step's times answers the last step with an error, for a step with a name of its own", async () => {
   fake.route = failedJob([], toleratedThenRequired, stepsOfIt("Tests"));
   expect(await askLog()).toBe(requiredFailure);
 });
@@ -905,6 +905,61 @@ test("log answers a failed action of several steps through to its error", async 
       "Lines about failures from the log of the step that failed:",
       "##[group]Run bun test",
       "(fail) subtracts",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+// A job whose set-up action logs a Run line for each step of its own, whose tests step has a
+// name of its own, and whose upload, run after the failure, failed too. The setup's last line
+// and the tests' first share a second, as do the tests' last and the upload's first.
+test("log finds the failed step by its times, past an action of several steps and before a later failure", async () => {
+  const at = (s: number, text: string) =>
+    `2026-11-09T10:00:${String(s).padStart(2, "0")}.5000000Z ${text}`;
+  const logText = [
+    at(0, "Current runner version: '2.329.0'"),
+    at(1, "##[group]Run ./.github/actions/setup"),
+    at(1, "##[endgroup]"),
+    at(2, "##[group]Run bun install"),
+    at(3, "Error: optional dependency skipped"),
+    at(3, "##[group]Run bun run build"),
+    at(4, "built"),
+    at(5, "##[group]Run bun test"),
+    at(5, "##[endgroup]"),
+    at(6, "(pass) adds"),
+    at(7, "(fail) real test failure"),
+    at(7, "error: expected 1, got 2"),
+    at(8, "##[error]Process completed with exit code 1."),
+    at(8, "##[group]Run actions/upload-artifact@v4"),
+    at(9, "Error: report upload failed"),
+    at(9, "##[error]Process completed with exit code 1."),
+    at(10, "Post job cleanup."),
+  ].join("\n");
+  const time = (s: number) => `2026-11-09T10:00:${String(s).padStart(2, "0")}Z`;
+  fake.route = failedJob([], logText, [
+    {
+      name: "Set up job",
+      number: 1,
+      conclusion: "success",
+      started_at: time(0),
+      completed_at: time(0),
+    },
+    { name: "Setup", number: 2, conclusion: "success", started_at: time(1), completed_at: time(5) },
+    { name: "Tests", number: 3, conclusion: "failure", started_at: time(5), completed_at: time(8) },
+    {
+      name: "Upload reports",
+      number: 4,
+      conclusion: "failure",
+      started_at: time(8),
+      completed_at: time(9),
+    },
+  ]);
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "(pass) adds",
+      "(fail) real test failure",
+      "error: expected 1, got 2",
       "##[error]Process completed with exit code 1.",
     ].join("\n"),
   );

@@ -867,6 +867,49 @@ test("log finds a failed step with a name of its own by its number", async () =>
   expect(await askLog()).toBe(requiredFailure);
 });
 
+test("log leaves out a later step with a name of its own that ran after the failure", async () => {
+  const withUpload = toleratedThenRequired.replace(
+    "2026-11-09T10:00:05.0000000Z Post job cleanup.",
+    [
+      "2026-11-09T10:00:04.5000000Z ##[group]Run actions/upload-artifact@v4",
+      "2026-11-09T10:00:04.5000000Z ##[endgroup]",
+      "2026-11-09T10:00:04.6000000Z Error: no artifact found",
+      "2026-11-09T10:00:05.0000000Z Post job cleanup.",
+    ].join("\n"),
+  );
+  const steps = stepsOfIt("Run bun test");
+  steps.splice(3, 0, { name: "Upload reports", number: 4, conclusion: "success" });
+  fake.route = failedJob([], withUpload, steps);
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log answers a failed action of several steps through to its error", async () => {
+  const composite = [
+    "2026-11-09T10:00:00.0000000Z Current runner version: '2.329.0'",
+    "2026-11-09T10:00:01.0000000Z ##[group]Run ./.github/actions/test",
+    "2026-11-09T10:00:01.0000000Z ##[endgroup]",
+    "2026-11-09T10:00:02.0000000Z ##[group]Run bun test",
+    "2026-11-09T10:00:02.0000000Z ##[endgroup]",
+    "2026-11-09T10:00:03.0000000Z (fail) subtracts",
+    "2026-11-09T10:00:03.0000000Z ##[error]Process completed with exit code 1.",
+    "2026-11-09T10:00:04.0000000Z ##[group]Run actions/upload-artifact@v4",
+    "2026-11-09T10:00:04.0000000Z Error: no artifact found",
+  ].join("\n");
+  fake.route = failedJob([], composite, [
+    { name: "Set up job", number: 1, conclusion: "success" },
+    { name: "Run ./.github/actions/test", number: 2, conclusion: "failure" },
+    { name: "Upload reports", number: 3, conclusion: "success" },
+  ]);
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) subtracts",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
 test("log without the job's steps answers the last step with an error before the cleanup", async () => {
   fake.route = failedJob([], toleratedThenRequired);
   expect(await askLog()).toBe(requiredFailure);

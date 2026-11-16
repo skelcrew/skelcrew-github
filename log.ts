@@ -60,8 +60,10 @@ export function stepsOf(job: unknown): Step[] {
 // Returns the lines of the step that failed the job. In the log, the job's set-up comes first,
 // then each step from a ##[group]Run line, then the post-job steps, from "Post job cleanup." or
 // "Cleaning up orphan processes". GitHub names a step without a name of its own by that same
-// Run line, so the step that failed is found by its name, and runs to the next later step's
-// line or the post-job steps. A step with a name of its own is found by its number instead,
+// Run line, so the step that failed is found by its name. A later step with a name of its own
+// doesn't show by it, so the step runs only to its first ##[error] line, which a failed step
+// ends with, including one that is an action of several steps, each with a Run line of its own.
+// It never runs past a later step's line or into the post-job steps. A step with a name of its own is found by its number instead,
 // when that part of the log has an ##[error] line. Without the steps, or when neither finds it,
 // it is the last part before the post-job steps with an ##[error] line, as a job stops at the
 // step that fails it, or failing that, everything before the post-job steps.
@@ -84,9 +86,16 @@ export function failedStep(lines: string[], steps: Step[] = []): string[] {
     const named = parts.map((part, n) => (!post[n] && part[0] === header(failed) ? n : -1));
     const start = named.find((n) => n !== -1 && erred(n)) ?? named.find((n) => n !== -1);
     if (start !== undefined) {
-      let end = start + 1;
-      while (end < parts.length && !post[end] && !later.has(parts[end]?.[0] ?? "")) end++;
-      return parts.slice(start, end).flat();
+      let end = start;
+      while (!erred(end)) {
+        const next = end + 1;
+        if (next >= parts.length || post[next] || later.has(parts[next]?.[0] ?? "")) {
+          end = start;
+          break;
+        }
+        end = next;
+      }
+      return parts.slice(start, end + 1).flat();
     }
     const at = failed.number - 1;
     if (!post[at] && erred(at)) return parts[at] ?? [];

@@ -773,16 +773,76 @@ test("status sets the skelcrew/check status check, cut to what GitHub takes", as
   ]);
 });
 
-test("log answers the end of a failed job's log, without GitHub's times", async () => {
+const recorded = (name: string) => readFileSync(join(import.meta.dir, "recorded", name), "utf8");
+
+// A failed GitHub Actions job: its annotations as GitHub answers them, and its log, where the
+// post-job cleanup follows the failure.
+function failedJob(annotations: unknown, logText: string) {
+  return (asked: Asked) =>
+    asked.path === "/api/repos/simon/app/check-runs/9/annotations?per_page=100"
+      ? json(annotations)
+      : asked.path === "/api/repos/simon/app/actions/jobs/9/logs"
+        ? new Response(logText)
+        : world(asked);
+}
+
+const askLog = async () =>
+  ((await ask({ ask: "log", repository: "simon/app", check: "9" })) as { log: string }).log;
+
+test("log answers the failure annotations, then what failed in the failed step, not the cleanup", async () => {
+  fake.route = failedJob(JSON.parse(recorded("annotations.json")), recorded("job.log"));
+  expect(await askLog()).toBe(
+    [
+      "Annotations on the failed check (failing tests and their errors):",
+      "test/call.test.ts:785: log answers the end of a failed job's log",
+      "error: expect(received).toEqual(expected)",
+      "",
+      'Expected: "line 10"',
+      'Received: "line 9"',
+      "",
+      "Lines about failures from the log of the step that failed:",
+      '785 |   expect(log.split("\\n")).toEqual(lines);',
+      "                              ^",
+      "error: expect(received).toEqual(expected)",
+      "      at <anonymous> (test/call.test.ts:785:27)",
+      "(fail) log answers the end of a failed job's log [21.00ms]",
+      "(pass) wake and unwake ask skel's service [9.00ms]",
+      "(pass) a question the plugin doesn't answer fails plainly [8.00ms]",
+      "",
+      "1 tests failed:",
+      "",
+      " 41 pass",
+      " 1 fail",
+      "Ran 42 tests across 3 files. [1.20s]",
+      'error: script "check" exited with code 1',
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+test("log keeps the annotations first and the whole answer within 3000 characters", async () => {
+  const many = Array.from({ length: 40 }, (_, n) => ({
+    path: "test/a.test.ts",
+    start_line: n + 1,
+    annotation_level: "failure",
+    title: `test ${n}`,
+    message: `error: ${"x".repeat(100)}`,
+  }));
+  fake.route = failedJob(many, recorded("job.log"));
+  const log = await askLog();
+  expect(log.length).toBeLessThanOrEqual(3000);
+  expect(log).toStartWith("Annotations on the failed check");
+  expect(log).toContain("test/a.test.ts:1: test 0\nerror: x");
+  expect(log).toEndWith("…");
+});
+
+test("log without annotations or lines about failures answers the end of the job's log, without GitHub's times", async () => {
   const lines = Array.from({ length: 40 }, (_, n) => `2026-11-09T10:00:00.1234567Z line ${n}`);
-  fake.route = (asked) =>
-    asked.path === "/api/repos/simon/app/actions/jobs/9/logs"
-      ? new Response(lines.join("\n"))
-      : world(asked);
-  const { log } = (await ask({ ask: "log", repository: "simon/app", check: "9" })) as {
-    log: string;
-  };
-  expect(log.split("\n")).toEqual(Array.from({ length: 30 }, (_, n) => `line ${n + 10}`));
+  fake.route = failedJob([], lines.join("\n"));
+  expect((await askLog()).split("\n")).toEqual([
+    "The end of the job's log:",
+    ...Array.from({ length: 30 }, (_, n) => `line ${n + 10}`),
+  ]);
 });
 
 test("log of a check that isn't from GitHub Actions answers its summary", async () => {
@@ -790,9 +850,7 @@ test("log of a check that isn't from GitHub Actions answers its summary", async 
     asked.path === "/api/repos/simon/app/check-runs/9"
       ? json({ output: { title: "Lint failed", summary: "3 problems", text: null } })
       : world(asked);
-  expect(await ask({ ask: "log", repository: "simon/app", check: "9" })).toEqual({
-    log: "Lint failed\n\n3 problems",
-  });
+  expect(await askLog()).toBe("The check's summary:\nLint failed\n\n3 problems");
 });
 
 test("wake and unwake ask skel's service to pass on, or stop, the repository's wake-ups", async () => {

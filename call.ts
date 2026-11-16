@@ -17,6 +17,7 @@ import {
   settings,
   text,
 } from "./github.ts";
+import { log } from "./log.ts";
 
 // Returns a repository skel names as owner/name, so nothing else reaches a GitHub path.
 function repositoryOf(value: unknown): string {
@@ -282,32 +283,6 @@ async function assign(repository: string, task: number, on: boolean) {
   // repository, so only the issue it answers with says whether it worked.
   if (!assigned(after.body)) throw new Error(`GitHub didn't assign ${login} to #${task}`);
   return { assigned: true };
-}
-
-// Answers `log`: the end of a failed check's log, kept short, as skel types it into the
-// builder, which can run the tests itself for more. A check from GitHub Actions has a job's
-// log, with a time in front of each line, which goes. Any other check has only its summary.
-async function log(repository: string, check: string): Promise<{ log: string }> {
-  const token = await repositoryToken(repository);
-  const response = await fetch(
-    `https://api.github.com/repos/${repository}/actions/jobs/${check}/logs`,
-    { headers: { authorization: `Bearer ${token}`, "user-agent": "skelcrew-github" } },
-  );
-  let lines: string[];
-  if (response.ok)
-    lines = (await response.text())
-      .trimEnd()
-      .split("\n")
-      .map((line) => line.replace(/^\d{4}-\d\d-\d\dT[\d:.]+Z /, ""));
-  else {
-    const run = await rest(repository, `read check ${check}`, "GET", `/check-runs/${check}`);
-    const output = record(record(run.body, "the check").output ?? {}, "the check's output");
-    lines = [output.title, output.summary, output.text]
-      .filter((part) => typeof part === "string" && part !== "")
-      .join("\n\n")
-      .split("\n");
-  }
-  return { log: lines.slice(-30).join("\n").slice(-3000) };
 }
 
 // Returns the answer to one question from skel.

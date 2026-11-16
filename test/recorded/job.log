@@ -1,0 +1,49 @@
+2026-11-09T10:00:00.0000000Z ##[group]Runner Image Provisioner
+2026-11-09T10:00:00.0000000Z Hosted Compute Agent
+2026-11-09T10:00:00.0000000Z ##[endgroup]
+2026-11-09T10:00:01.0000000Z ##[group]Run actions/checkout@v4
+2026-11-09T10:00:01.0000000Z with:
+2026-11-09T10:00:01.0000000Z   repository: simon/app
+2026-11-09T10:00:01.0000000Z ##[endgroup]
+2026-11-09T10:00:02.0000000Z Syncing repository: simon/app
+2026-11-09T10:00:03.0000000Z ##[group]Run bun install
+2026-11-09T10:00:03.0000000Z ##[endgroup]
+2026-11-09T10:00:04.0000000Z 45 packages installed [312.00ms]
+2026-11-09T10:00:05.0000000Z ##[group]Run bun run check
+2026-11-09T10:00:05.0000000Z bun run check
+2026-11-09T10:00:05.0000000Z shell: /usr/bin/bash -e {0}
+2026-11-09T10:00:05.0000000Z ##[endgroup]
+2026-11-09T10:00:06.0000000Z Checked 14 files in 40ms. No fixes applied.
+2026-11-09T10:00:07.0000000Z bun test v1.3.2
+2026-11-09T10:00:07.0000000Z 
+2026-11-09T10:00:07.0000000Z test/credentials.test.ts:
+2026-11-09T10:00:07.0000000Z (pass) credentials answers the app's token [12.00ms]
+2026-11-09T10:00:07.0000000Z 
+2026-11-09T10:00:07.0000000Z test/call.test.ts:
+2026-11-09T10:00:08.0000000Z (pass) claims answers for a remote on GitHub [30.00ms]
+2026-11-09T10:00:08.0000000Z 783 |   const { log } = (await ask({ ask: "log", repository: "simon/app", check: "9" })) as {
+2026-11-09T10:00:08.0000000Z 784 |     log: string;
+2026-11-09T10:00:08.0000000Z 785 |   expect(log.split("\n")).toEqual(lines);
+2026-11-09T10:00:08.0000000Z                               ^
+2026-11-09T10:00:08.0000000Z error: expect(received).toEqual(expected)
+2026-11-09T10:00:08.0000000Z       at <anonymous> (test/call.test.ts:785:27)
+2026-11-09T10:00:08.0000000Z (fail) log answers the end of a failed job's log [21.00ms]
+2026-11-09T10:00:08.0000000Z (pass) wake and unwake ask skel's service [9.00ms]
+2026-11-09T10:00:08.0000000Z (pass) a question the plugin doesn't answer fails plainly [8.00ms]
+2026-11-09T10:00:09.0000000Z 
+2026-11-09T10:00:09.0000000Z 1 tests failed:
+2026-11-09T10:00:09.0000000Z (fail) log answers the end of a failed job's log [21.00ms]
+2026-11-09T10:00:09.0000000Z 
+2026-11-09T10:00:09.0000000Z  41 pass
+2026-11-09T10:00:09.0000000Z  1 fail
+2026-11-09T10:00:09.0000000Z Ran 42 tests across 3 files. [1.20s]
+2026-11-09T10:00:09.0000000Z error: script "check" exited with code 1
+2026-11-09T10:00:09.0000000Z ##[error]Process completed with exit code 1.
+2026-11-09T10:00:10.0000000Z Post job cleanup.
+2026-11-09T10:00:10.0000000Z [command]/usr/bin/git version
+2026-11-09T10:00:10.0000000Z git version 2.51.0
+2026-11-09T10:00:10.0000000Z Error: unable to remove temporary credentials file
+2026-11-09T10:00:10.0000000Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-09T10:00:10.0000000Z Removing auth
+2026-11-09T10:00:11.0000000Z Cleaning up orphan processes
+2026-11-09T10:00:11.0000000Z Terminate orphan process: pid (2101) (bun)

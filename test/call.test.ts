@@ -895,10 +895,29 @@ test("log answers a failed action of several steps through to its error", async 
     "2026-11-09T10:00:04.0000000Z ##[group]Run actions/upload-artifact@v4",
     "2026-11-09T10:00:04.0000000Z Error: no artifact found",
   ].join("\n");
+  const time = (s: number) => `2026-11-09T10:00:0${s}Z`;
   fake.route = failedJob([], composite, [
-    { name: "Set up job", number: 1, conclusion: "success" },
-    { name: "Run ./.github/actions/test", number: 2, conclusion: "failure" },
-    { name: "Upload reports", number: 3, conclusion: "success" },
+    {
+      name: "Set up job",
+      number: 1,
+      conclusion: "success",
+      started_at: time(0),
+      completed_at: time(0),
+    },
+    {
+      name: "Run ./.github/actions/test",
+      number: 2,
+      conclusion: "failure",
+      started_at: time(1),
+      completed_at: time(3),
+    },
+    {
+      name: "Upload reports",
+      number: 3,
+      conclusion: "success",
+      started_at: time(4),
+      completed_at: time(4),
+    },
   ]);
   expect(await askLog()).toBe(
     [
@@ -960,6 +979,81 @@ test("log finds the failed step by its times, past an action of several steps an
       "(pass) adds",
       "(fail) real test failure",
       "error: expected 1, got 2",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+const at = (s: number, text: string) =>
+  `2026-11-09T10:00:${String(s).padStart(2, "0")}.5000000Z ${text}`;
+const second = (s: number) => `2026-11-09T10:00:${String(s).padStart(2, "0")}Z`;
+const step = (name: string, number: number, conclusion: string, from: number, to: number) => ({
+  name,
+  number,
+  conclusion,
+  started_at: second(from),
+  completed_at: second(to),
+});
+
+test("log answers what the failed step logs after an error, through to its end", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run bun test"),
+      at(1, "##[endgroup]"),
+      at(2, "(fail) first failure"),
+      at(2, "##[error]a.test.ts: expected 1, got 2"),
+      at(3, "(pass) adds"),
+      at(3, "(pass) multiplies"),
+      at(3, "(pass) divides"),
+      at(3, "(pass) rounds"),
+      at(4, "(fail) second failure"),
+      at(4, "##[error]Process completed with exit code 1."),
+      at(5, "Post job cleanup."),
+    ].join("\n"),
+    [step("Set up job", 1, "success", 0, 0), step("Tests", 2, "failure", 1, 4)],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) first failure",
+      "##[error]a.test.ts: expected 1, got 2",
+      "(pass) adds",
+      "(pass) multiplies",
+      "(pass) divides",
+      "(pass) rounds",
+      "(fail) second failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+test("log answers a failed step with a name of its own that started in the second the step before it did", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(2, "##[group]Run ./setup.sh"),
+      at(2, "Error: setup went half way"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(2, "##[group]Run bun test"),
+      at(3, "(fail) real test failure"),
+      at(4, "##[error]Process completed with exit code 1."),
+      at(5, "Post job cleanup."),
+    ].join("\n"),
+    [
+      step("Set up job", 1, "success", 0, 0),
+      step("Setup", 2, "success", 2, 2),
+      step("Tests", 3, "failure", 2, 4),
+    ],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) real test failure",
       "##[error]Process completed with exit code 1.",
     ].join("\n"),
   );

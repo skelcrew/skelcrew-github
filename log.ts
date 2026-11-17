@@ -83,11 +83,15 @@ export function stepsOf(job: unknown): Step[] {
 // a name of its own shows by its command, not its name. So each step is placed by its times,
 // which the jobs API gives to the second. A step's Run line is logged in its first second,
 // after every line of the step before it and before any line logged after that step completed.
-// The steps are placed from the last back, each at a Run line from the second it started,
-// preferring one that shows its name. That is the first such line, as an action of several
-// steps logs its own after it, unless the step before it completed in that second too. Then it
-// is the last, so the step isn't placed on the line of the step before it. The failed step runs from its Run line to the next step's, or the
-// post-job steps, so whatever it logs after an error comes too.
+// Where the second a step starts is shared with the step before it, and either is an action
+// of several steps, the times can't tell whose Run line is whose, so the failed step is placed
+// to keep all of itself, at the cost of some of its neighbours. The steps up to it are placed
+// from the first on, each at the first Run line from the second it started after the line of
+// the step before it, so the failed step never starts at one of its own later Run lines. The
+// steps after it are placed from the last back, each at the last such line, so the step after
+// it is never placed at one of the failed step's own. A Run line that shows the step's name
+// comes first. The failed step runs from its line to the next step's, or the post-job steps,
+// so whatever it logs after an error comes too.
 //
 // Without the steps' times, the failed step is found by its name alone, and runs to the next
 // Run line. Without the steps, or when neither finds it, it is the last part before the
@@ -106,14 +110,8 @@ export function failedStep(
   const runs = lines.flatMap((_, n) => (n < cleanup && isRun(n) ? [n] : []));
   const header = (step: Step) => `##[group]${step.name}`;
   const failed = steps.find((step) => step.conclusion === "failure");
-  const placed = failed === undefined ? null : place(lines, times, steps, runs, cleanup);
-  if (failed !== undefined && placed !== null) {
-    const at = placed.get(failed);
-    if (at !== undefined) {
-      const later = [...placed.values()].filter((n) => n > at);
-      return lines.slice(at, Math.min(cleanup, ...later));
-    }
-  }
+  const placed = failed === undefined ? null : place(lines, times, steps, failed, runs, cleanup);
+  if (placed !== null) return lines.slice(placed.start, placed.end);
   if (failed !== undefined) {
     const at = runs.find((n) => lines[n] === header(failed));
     if (at !== undefined) return lines.slice(at, runs.find((n) => n > at) ?? cleanup);
@@ -125,16 +123,17 @@ export function failedStep(
   return lines.slice(0, cleanup);
 }
 
-// Returns the line each step that logged in the steps before the cleanup starts at, as
-// failedStep describes, or null when a step's times are missing. A step that finds no line that
-// fits is left out, and those before it are placed before the next it found.
+// Returns where the failed step starts and ends in the lines before the cleanup, placing the
+// steps as failedStep describes, or null when a step's times are missing or the failed step
+// finds no Run line that fits.
 function place(
   lines: string[],
   times: (number | null)[],
   steps: Step[],
+  failed: Step,
   runs: number[],
   cleanup: number,
-): Map<Step, number> | null {
+): { start: number; end: number } | null {
   const second = (ms: number) => Math.floor(ms / 1000);
   const logged = steps.filter(
     (step, n) =>
@@ -143,7 +142,10 @@ function place(
       step.name !== "Complete job" &&
       step.conclusion !== "skipped",
   );
-  if (logged.some((step) => step.started == null || step.completed == null)) return null;
+  const ran = steps.filter((step) => step.conclusion !== "skipped");
+  const at = logged.indexOf(failed);
+  if (at === -1 || logged.some((step) => step.started == null || step.completed == null))
+    return null;
   // The first line logged after the second, and the last logged before it.
   const firstAfter = (s: number) => {
     const n = times.findIndex((time, i) => i < cleanup && time != null && second(time) > s);
@@ -151,37 +153,41 @@ function place(
   };
   const lastBefore = (s: number) =>
     times.findLastIndex((time, i) => i < cleanup && time != null && second(time) < s);
-  const ran = steps.filter((step) => step.conclusion !== "skipped");
-  const placed = new Map<Step, number>();
-  let next = cleanup;
-  for (let k = logged.length - 1; k >= 0; k--) {
-    const step = logged[k];
-    if (step?.started == null || step.completed == null) continue;
-    const start = second(step.started);
-    const from = lastBefore(start) + 1;
+  // The Run lines the step can start at, after `after` and before `next`: those from the second
+  // it started, or failing that, any up to the second it completed, with one showing its name
+  // alone when there is one.
+  const fits = (step: Step, after: number, next: number) => {
+    const start = second(step.started ?? 0);
+    const end = second(step.completed ?? 0);
     const before = ran[ran.indexOf(step) - 1]?.completed;
+    const from = Math.max(after + 1, lastBefore(start) + 1);
     const to = Math.min(next - 1, before == null ? cleanup : firstAfter(second(before)));
-    const end = second(step.completed);
     const within = runs.filter((n) => {
       const time = times[n];
       return n >= from && n <= to && (time == null || second(time) <= end);
     });
-    // A step's Run line is logged in the second it started. Its own later Run lines, from an
-    // action of several steps, come after it, so the first in that second is the step's,
-    // unless the step before it completed in that second too, and its lines may come first.
     const first = within.filter((n) => {
       const time = times[n];
       return time == null || second(time) === start;
     });
-    const fits = first.length > 0 ? first : within;
-    const shared = before != null && second(before) >= start;
-    const at =
-      fits.find((n) => lines[n] === `##[group]${step.name}`) ?? (shared ? fits.at(-1) : fits[0]);
-    if (at === undefined) continue;
-    placed.set(step, at);
-    next = at;
+    const all = first.length > 0 ? first : within;
+    const named = all.filter((n) => lines[n] === `##[group]${step.name}`);
+    return named.length > 0 ? named : all;
+  };
+  let start = -1;
+  for (let k = 0; k <= at; k++) {
+    const step = logged[k];
+    const found = step === undefined ? undefined : fits(step, start, cleanup)[0];
+    if (found !== undefined) start = found;
+    else if (k === at) return null;
   }
-  return placed;
+  let end = cleanup;
+  for (let k = logged.length - 1; k > at; k--) {
+    const step = logged[k];
+    const found = step === undefined ? undefined : fits(step, start, end).at(-1);
+    if (found !== undefined) end = found;
+  }
+  return { start, end };
 }
 
 // Returns the lines that say what failed, each with a few lines around it. Lines already kept

@@ -1089,6 +1089,46 @@ test("log answers the whole of a failed action of several steps with a name of i
   );
 });
 
+// The same, where the action starts in the second the step before it completed, and the step
+// after it starts in the second the action's reporting step did.
+test("log answers the whole of a failed action of several steps that shares its seconds with its neighbours", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run ./setup.sh"),
+      at(2, "Error: setup went half way"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(2, "##[group]Run ./.github/actions/tests"),
+      at(2, "##[group]Run bun test"),
+      at(2, "(fail) real test failure"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(3, "##[group]Run ./report.sh"),
+      at(3, "wrote the report"),
+      at(3, "##[group]Run actions/upload-artifact@v4"),
+      at(3, "Error: no artifact found"),
+      at(4, "Post job cleanup."),
+    ].join("\n"),
+    [
+      step("Set up job", 1, "success", 0, 0),
+      step("Setup", 2, "success", 1, 2),
+      step("Tests", 3, "failure", 2, 3),
+      step("Upload reports", 4, "success", 3, 3),
+    ],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run ./.github/actions/tests",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
+      "##[group]Run ./report.sh",
+      "wrote the report",
+    ].join("\n"),
+  );
+});
+
 test("log without the job's steps answers the last step with an error before the cleanup", async () => {
   fake.route = failedJob([], toleratedThenRequired);
   expect(await askLog()).toBe(requiredFailure);

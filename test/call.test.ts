@@ -1059,6 +1059,36 @@ test("log answers a failed step with a name of its own that started in the secon
   );
 });
 
+// An action of several steps, named Tests and the first step to run, whose tests fail and whose
+// reporting step runs after them all the same.
+test("log answers the whole of a failed action of several steps with a name of its own", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run ./.github/actions/tests"),
+      at(1, "##[endgroup]"),
+      at(1, "##[group]Run bun test"),
+      at(2, "(fail) real test failure"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(3, "##[group]Run ./report.sh"),
+      at(3, "wrote the report"),
+      at(4, "Post job cleanup."),
+    ].join("\n"),
+    [step("Set up job", 1, "success", 0, 0), step("Tests", 2, "failure", 1, 3)],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
+      "##[group]Run ./report.sh",
+      "wrote the report",
+    ].join("\n"),
+  );
+});
+
 test("log without the job's steps answers the last step with an error before the cleanup", async () => {
   fake.route = failedJob([], toleratedThenRequired);
   expect(await askLog()).toBe(requiredFailure);

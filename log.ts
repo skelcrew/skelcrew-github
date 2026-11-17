@@ -84,14 +84,16 @@ export function stepsOf(job: unknown): Step[] {
 // which the jobs API gives to the second. A step's Run line is logged in its first second,
 // after every line of the step before it and before any line logged after that step completed.
 // Where the second a step starts is shared with the step before it, and either is an action
-// of several steps, the times can't tell whose Run line is whose, so the failed step is placed
-// to keep all of itself, at the cost of some of its neighbours. The steps up to it are placed
-// from the first on, each at the first Run line from the second it started after the line of
-// the step before it, so the failed step never starts at one of its own later Run lines. The
-// steps after it are placed from the last back, each at the last such line, so the step after
-// it is never placed at one of the failed step's own. A Run line that shows the step's name
-// comes first. The failed step runs from its line to the next step's, or the post-job steps,
-// so whatever it logs after an error comes too.
+// of several steps, the times can't tell whose Run line is whose. The steps up to the failed
+// one are placed from the first on, each at the first Run line from the second it started
+// after the line of the step before it, so the failed step never starts at one of its own later
+// Run lines. The steps after it are placed from the last back, each at the last such line,
+// but for the step just after it: it is placed at the first such line after the failed step's
+// last ##[error] line that comes before any of them. So the failed step ends at that step's
+// own Run line, not one of the later ones from an action of several steps, and still keeps
+// what it says failed. A Run line that shows the step's name comes first. The failed step runs
+// from its line to the next step's, or the post-job steps, so whatever it logs after an error
+// comes too.
 //
 // Without the steps' times, the failed step is found by its name alone, and runs to the next
 // Run line. Without the steps, or when neither finds it, it is the last part before the
@@ -184,8 +186,16 @@ function place(
   let end = cleanup;
   for (let k = logged.length - 1; k > at; k--) {
     const step = logged[k];
-    const found = step === undefined ? undefined : fits(step, start, end).at(-1);
-    if (found !== undefined) end = found;
+    const can = step === undefined ? [] : fits(step, start, end);
+    const latest = can.at(-1);
+    if (latest === undefined) continue;
+    if (k > at + 1) {
+      end = latest;
+      continue;
+    }
+    let erred = -1;
+    for (let n = start; n < latest; n++) if (lines[n]?.startsWith("##[error]")) erred = n;
+    end = can.find((n) => n > erred) ?? latest;
   }
   return { start, end };
 }

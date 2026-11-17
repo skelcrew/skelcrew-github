@@ -1090,7 +1090,8 @@ test("log answers the whole of a failed action of several steps with a name of i
 });
 
 // The same, where the action starts in the second the step before it completed, and the step
-// after it starts in the second the action's reporting step did.
+// after it starts in the second the action's reporting step did. Whose that reporting step is
+// can't be told, so it goes, but what failed stays.
 test("log answers the whole of a failed action of several steps that shares its seconds with its neighbours", async () => {
   fake.route = failedJob(
     [],
@@ -1123,8 +1124,38 @@ test("log answers the whole of a failed action of several steps that shares its 
       "##[group]Run bun test",
       "(fail) real test failure",
       "##[error]Process completed with exit code 1.",
-      "##[group]Run ./report.sh",
-      "wrote the report",
+    ].join("\n"),
+  );
+});
+
+// A failed step followed by an action of several steps, named Report, that starts in the
+// second the failed step completed and warns before its own first command.
+test("log ends the failed step at the outer Run line of an action of several steps after it", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run bun test"),
+      at(2, "(fail) real test failure"),
+      at(3, "##[error]Process completed with exit code 1."),
+      at(3, "##[group]Run ./.github/actions/report"),
+      at(3, "Error: unrelated report warning"),
+      at(3, "##[group]Run ./report.sh"),
+      at(3, "wrote the report"),
+      at(4, "Post job cleanup."),
+    ].join("\n"),
+    [
+      step("Set up job", 1, "success", 0, 0),
+      step("Tests", 2, "failure", 1, 3),
+      step("Report", 3, "success", 3, 3),
+    ],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
     ].join("\n"),
   );
 });

@@ -1,0 +1,38 @@
+[
+  {
+    "path": "test/call.test.ts",
+    "blob_href": "https://github.com/simon/app/blob/6dc2af9/test/call.test.ts",
+    "start_line": 785,
+    "start_column": null,
+    "end_line": 785,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "log answers the end of a failed job's log",
+    "message": "error: expect(received).toEqual(expected)\n\nExpected: \"line 10\"\nReceived: \"line 9\"",
+    "raw_details": null
+  },
+  {
+    "path": "call.ts",
+    "blob_href": "https://github.com/simon/app/blob/6dc2af9/call.ts",
+    "start_line": 12,
+    "start_column": 3,
+    "end_line": 12,
+    "end_column": 9,
+    "annotation_level": "warning",
+    "title": "lint/style/useConst",
+    "message": "This let declares a variable that is only assigned once.",
+    "raw_details": null
+  },
+  {
+    "path": ".github",
+    "blob_href": "https://github.com/simon/app/blob/6dc2af9/.github",
+    "start_line": 1,
+    "start_column": null,
+    "end_line": 1,
+    "end_column": null,
+    "annotation_level": "failure",
+    "title": "",
+    "message": "Process completed with exit code 1.",
+    "raw_details": null
+  }
+]

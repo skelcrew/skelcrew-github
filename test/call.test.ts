@@ -773,16 +773,443 @@ test("status sets the skelcrew/check status check, cut to what GitHub takes", as
   ]);
 });
 
-test("log answers the end of a failed job's log, without GitHub's times", async () => {
-  const lines = Array.from({ length: 40 }, (_, n) => `2026-11-09T10:00:00.1234567Z line ${n}`);
-  fake.route = (asked) =>
-    asked.path === "/api/repos/simon/app/actions/jobs/9/logs"
-      ? new Response(lines.join("\n"))
-      : world(asked);
-  const { log } = (await ask({ ask: "log", repository: "simon/app", check: "9" })) as {
-    log: string;
+const recorded = (name: string) => readFileSync(join(import.meta.dir, "recorded", name), "utf8");
+
+// A failed GitHub Actions job: its annotations as GitHub answers them, and its log, where the
+// post-job cleanup follows the failure. `annotations` is one page, or a list of pages, and
+// `steps` the job's steps, which a job not from GitHub Actions has none of.
+function failedJob(annotations: unknown[], logText: string, steps?: unknown[]) {
+  const pages = Array.isArray(annotations[0]) ? annotations : [annotations];
+  return (asked: Asked) => {
+    const page = asked.path.match(
+      /^\/api\/repos\/simon\/app\/check-runs\/9\/annotations\?per_page=100&page=(\d+)$/,
+    );
+    if (page) return json(pages[Number(page[1]) - 1] ?? []);
+    if (asked.path === "/api/repos/simon/app/actions/jobs/9/logs") return new Response(logText);
+    if (asked.path === "/api/repos/simon/app/actions/jobs/9" && steps) return json({ steps });
+    return world(asked);
   };
-  expect(log.split("\n")).toEqual(Array.from({ length: 30 }, (_, n) => `line ${n + 10}`));
+}
+
+const askLog = async () =>
+  ((await ask({ ask: "log", repository: "simon/app", check: "9" })) as { log: string }).log;
+
+test("log answers the failure annotations, then what failed in the failed step, not the cleanup", async () => {
+  fake.route = failedJob(JSON.parse(recorded("annotations.json")), recorded("job.log"));
+  expect(await askLog()).toBe(
+    [
+      "Annotations on the failed check (failing tests and their errors):",
+      "test/call.test.ts:785: log answers the end of a failed job's log",
+      "error: expect(received).toEqual(expected)",
+      "",
+      'Expected: "line 10"',
+      'Received: "line 9"',
+      "",
+      "Lines about failures from the log of the step that failed:",
+      '785 |   expect(log.split("\\n")).toEqual(lines);',
+      "                              ^",
+      "error: expect(received).toEqual(expected)",
+      "      at <anonymous> (test/call.test.ts:785:27)",
+      "(fail) log answers the end of a failed job's log [21.00ms]",
+      "(pass) wake and unwake ask skel's service [9.00ms]",
+      "(pass) a question the plugin doesn't answer fails plainly [8.00ms]",
+      "",
+      "1 tests failed:",
+      "",
+      " 41 pass",
+      " 1 fail",
+      "Ran 42 tests across 3 files. [1.20s]",
+      'error: script "check" exited with code 1',
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+// A job whose lint step failed but was let go on, with continue-on-error, before its tests
+// failed it.
+const toleratedThenRequired = [
+  "2026-11-09T10:00:00.0000000Z Current runner version: '2.329.0'",
+  "2026-11-09T10:00:01.0000000Z ##[group]Run bun run lint",
+  "2026-11-09T10:00:01.0000000Z ##[endgroup]",
+  "2026-11-09T10:00:02.0000000Z (fail) lint: unused import in a.ts",
+  "2026-11-09T10:00:02.0000000Z ##[error]Process completed with exit code 1.",
+  "2026-11-09T10:00:03.0000000Z ##[group]Run bun test",
+  "2026-11-09T10:00:03.0000000Z ##[endgroup]",
+  "2026-11-09T10:00:04.0000000Z (pass) adds",
+  "2026-11-09T10:00:04.0000000Z (fail) subtracts",
+  "2026-11-09T10:00:04.0000000Z ##[error]Process completed with exit code 1.",
+  "2026-11-09T10:00:05.0000000Z Post job cleanup.",
+  "2026-11-09T10:00:05.0000000Z Error: something in the cleanup",
+].join("\n");
+
+const stepsOfIt = (testsName: string) => [
+  { name: "Set up job", number: 1, conclusion: "success" },
+  { name: "Run bun run lint", number: 2, conclusion: "success" },
+  { name: testsName, number: 3, conclusion: "failure" },
+  { name: "Post Run actions/checkout@v4", number: 4, conclusion: "success" },
+  { name: "Complete job", number: 5, conclusion: "success" },
+];
+
+const requiredFailure = [
+  "Lines about failures from the log of the step that failed:",
+  "(pass) adds",
+  "(fail) subtracts",
+  "##[error]Process completed with exit code 1.",
+].join("\n");
+
+test("log answers the step that failed the job, not an earlier one let go on, by its name", async () => {
+  fake.route = failedJob([], toleratedThenRequired, stepsOfIt("Run bun test"));
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log without the failed step's times answers the last step with an error, for a step with a name of its own", async () => {
+  fake.route = failedJob([], toleratedThenRequired, stepsOfIt("Tests"));
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log leaves out a later step with a name of its own that ran after the failure", async () => {
+  const withUpload = toleratedThenRequired.replace(
+    "2026-11-09T10:00:05.0000000Z Post job cleanup.",
+    [
+      "2026-11-09T10:00:04.5000000Z ##[group]Run actions/upload-artifact@v4",
+      "2026-11-09T10:00:04.5000000Z ##[endgroup]",
+      "2026-11-09T10:00:04.6000000Z Error: no artifact found",
+      "2026-11-09T10:00:05.0000000Z Post job cleanup.",
+    ].join("\n"),
+  );
+  const steps = stepsOfIt("Run bun test");
+  steps.splice(3, 0, { name: "Upload reports", number: 4, conclusion: "success" });
+  fake.route = failedJob([], withUpload, steps);
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log answers a failed action of several steps through to its error", async () => {
+  const composite = [
+    "2026-11-09T10:00:00.0000000Z Current runner version: '2.329.0'",
+    "2026-11-09T10:00:01.0000000Z ##[group]Run ./.github/actions/test",
+    "2026-11-09T10:00:01.0000000Z ##[endgroup]",
+    "2026-11-09T10:00:02.0000000Z ##[group]Run bun test",
+    "2026-11-09T10:00:02.0000000Z ##[endgroup]",
+    "2026-11-09T10:00:03.0000000Z (fail) subtracts",
+    "2026-11-09T10:00:03.0000000Z ##[error]Process completed with exit code 1.",
+    "2026-11-09T10:00:04.0000000Z ##[group]Run actions/upload-artifact@v4",
+    "2026-11-09T10:00:04.0000000Z Error: no artifact found",
+  ].join("\n");
+  const time = (s: number) => `2026-11-09T10:00:0${s}Z`;
+  fake.route = failedJob([], composite, [
+    {
+      name: "Set up job",
+      number: 1,
+      conclusion: "success",
+      started_at: time(0),
+      completed_at: time(0),
+    },
+    {
+      name: "Run ./.github/actions/test",
+      number: 2,
+      conclusion: "failure",
+      started_at: time(1),
+      completed_at: time(3),
+    },
+    {
+      name: "Upload reports",
+      number: 3,
+      conclusion: "success",
+      started_at: time(4),
+      completed_at: time(4),
+    },
+  ]);
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) subtracts",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+// A job whose set-up action logs a Run line for each step of its own, whose tests step has a
+// name of its own, and whose upload, run after the failure, failed too. The setup's last line
+// and the tests' first share a second, as do the tests' last and the upload's first.
+test("log finds the failed step by its times, past an action of several steps and before a later failure", async () => {
+  const at = (s: number, text: string) =>
+    `2026-11-09T10:00:${String(s).padStart(2, "0")}.5000000Z ${text}`;
+  const logText = [
+    at(0, "Current runner version: '2.329.0'"),
+    at(1, "##[group]Run ./.github/actions/setup"),
+    at(1, "##[endgroup]"),
+    at(2, "##[group]Run bun install"),
+    at(3, "Error: optional dependency skipped"),
+    at(3, "##[group]Run bun run build"),
+    at(4, "built"),
+    at(5, "##[group]Run bun test"),
+    at(5, "##[endgroup]"),
+    at(6, "(pass) adds"),
+    at(7, "(fail) real test failure"),
+    at(7, "error: expected 1, got 2"),
+    at(8, "##[error]Process completed with exit code 1."),
+    at(8, "##[group]Run actions/upload-artifact@v4"),
+    at(9, "Error: report upload failed"),
+    at(9, "##[error]Process completed with exit code 1."),
+    at(10, "Post job cleanup."),
+  ].join("\n");
+  const time = (s: number) => `2026-11-09T10:00:${String(s).padStart(2, "0")}Z`;
+  fake.route = failedJob([], logText, [
+    {
+      name: "Set up job",
+      number: 1,
+      conclusion: "success",
+      started_at: time(0),
+      completed_at: time(0),
+    },
+    { name: "Setup", number: 2, conclusion: "success", started_at: time(1), completed_at: time(5) },
+    { name: "Tests", number: 3, conclusion: "failure", started_at: time(5), completed_at: time(8) },
+    {
+      name: "Upload reports",
+      number: 4,
+      conclusion: "failure",
+      started_at: time(8),
+      completed_at: time(9),
+    },
+  ]);
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "(pass) adds",
+      "(fail) real test failure",
+      "error: expected 1, got 2",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+const at = (s: number, text: string) =>
+  `2026-11-09T10:00:${String(s).padStart(2, "0")}.5000000Z ${text}`;
+const second = (s: number) => `2026-11-09T10:00:${String(s).padStart(2, "0")}Z`;
+const step = (name: string, number: number, conclusion: string, from: number, to: number) => ({
+  name,
+  number,
+  conclusion,
+  started_at: second(from),
+  completed_at: second(to),
+});
+
+test("log answers what the failed step logs after an error, through to its end", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run bun test"),
+      at(1, "##[endgroup]"),
+      at(2, "(fail) first failure"),
+      at(2, "##[error]a.test.ts: expected 1, got 2"),
+      at(3, "(pass) adds"),
+      at(3, "(pass) multiplies"),
+      at(3, "(pass) divides"),
+      at(3, "(pass) rounds"),
+      at(4, "(fail) second failure"),
+      at(4, "##[error]Process completed with exit code 1."),
+      at(5, "Post job cleanup."),
+    ].join("\n"),
+    [step("Set up job", 1, "success", 0, 0), step("Tests", 2, "failure", 1, 4)],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) first failure",
+      "##[error]a.test.ts: expected 1, got 2",
+      "(pass) adds",
+      "(pass) multiplies",
+      "(pass) divides",
+      "(pass) rounds",
+      "(fail) second failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+test("log answers a failed step with a name of its own that started in the second the step before it did", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(2, "##[group]Run ./setup.sh"),
+      at(2, "Error: setup went half way"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(2, "##[group]Run bun test"),
+      at(3, "(fail) real test failure"),
+      at(4, "##[error]Process completed with exit code 1."),
+      at(5, "Post job cleanup."),
+    ].join("\n"),
+    [
+      step("Set up job", 1, "success", 0, 0),
+      step("Setup", 2, "success", 2, 2),
+      step("Tests", 3, "failure", 2, 4),
+    ],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+// An action of several steps, named Tests and the first step to run, whose tests fail and whose
+// reporting step runs after them all the same.
+test("log answers the whole of a failed action of several steps with a name of its own", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run ./.github/actions/tests"),
+      at(1, "##[endgroup]"),
+      at(1, "##[group]Run bun test"),
+      at(2, "(fail) real test failure"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(3, "##[group]Run ./report.sh"),
+      at(3, "wrote the report"),
+      at(4, "Post job cleanup."),
+    ].join("\n"),
+    [step("Set up job", 1, "success", 0, 0), step("Tests", 2, "failure", 1, 3)],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
+      "##[group]Run ./report.sh",
+      "wrote the report",
+    ].join("\n"),
+  );
+});
+
+// The same, where the action starts in the second the step before it completed, and the step
+// after it starts in the second the action's reporting step did. Whose that reporting step is
+// can't be told, so it goes, but what failed stays.
+test("log answers the whole of a failed action of several steps that shares its seconds with its neighbours", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run ./setup.sh"),
+      at(2, "Error: setup went half way"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(2, "##[group]Run ./.github/actions/tests"),
+      at(2, "##[group]Run bun test"),
+      at(2, "(fail) real test failure"),
+      at(2, "##[error]Process completed with exit code 1."),
+      at(3, "##[group]Run ./report.sh"),
+      at(3, "wrote the report"),
+      at(3, "##[group]Run actions/upload-artifact@v4"),
+      at(3, "Error: no artifact found"),
+      at(4, "Post job cleanup."),
+    ].join("\n"),
+    [
+      step("Set up job", 1, "success", 0, 0),
+      step("Setup", 2, "success", 1, 2),
+      step("Tests", 3, "failure", 2, 3),
+      step("Upload reports", 4, "success", 3, 3),
+    ],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run ./.github/actions/tests",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+// A failed step followed by an action of several steps, named Report, that starts in the
+// second the failed step completed and warns before its own first command.
+test("log ends the failed step at the outer Run line of an action of several steps after it", async () => {
+  fake.route = failedJob(
+    [],
+    [
+      at(0, "Current runner version: '2.329.0'"),
+      at(1, "##[group]Run bun test"),
+      at(2, "(fail) real test failure"),
+      at(3, "##[error]Process completed with exit code 1."),
+      at(3, "##[group]Run ./.github/actions/report"),
+      at(3, "Error: unrelated report warning"),
+      at(3, "##[group]Run ./report.sh"),
+      at(3, "wrote the report"),
+      at(4, "Post job cleanup."),
+    ].join("\n"),
+    [
+      step("Set up job", 1, "success", 0, 0),
+      step("Tests", 2, "failure", 1, 3),
+      step("Report", 3, "success", 3, 3),
+    ],
+  );
+  expect(await askLog()).toBe(
+    [
+      "Lines about failures from the log of the step that failed:",
+      "##[group]Run bun test",
+      "(fail) real test failure",
+      "##[error]Process completed with exit code 1.",
+    ].join("\n"),
+  );
+});
+
+test("log without the job's steps answers the last step with an error before the cleanup", async () => {
+  fake.route = failedJob([], toleratedThenRequired);
+  expect(await askLog()).toBe(requiredFailure);
+});
+
+test("log reads every page of annotations, so a failure after a page of warnings comes", async () => {
+  const warnings = Array.from({ length: 100 }, (_, n) => ({
+    path: "a.ts",
+    start_line: n + 1,
+    annotation_level: "warning",
+    title: "lint",
+    message: "unused",
+  }));
+  const failure = {
+    path: "test/b.test.ts",
+    start_line: 7,
+    annotation_level: "failure",
+    title: "subtracts",
+    message: "error: expected 1",
+  };
+  fake.route = failedJob([warnings, [failure]], "nothing to see");
+  expect(await askLog()).toBe(
+    "Annotations on the failed check (failing tests and their errors):\ntest/b.test.ts:7: subtracts\nerror: expected 1",
+  );
+  expect(fake.asked.filter((a) => a.path.includes("/annotations?")).length).toBe(2);
+});
+
+test("log keeps the annotations first and the whole answer within 3000 characters", async () => {
+  const many = Array.from({ length: 40 }, (_, n) => ({
+    path: "test/a.test.ts",
+    start_line: n + 1,
+    annotation_level: "failure",
+    title: `test ${n}`,
+    message: `error: ${"x".repeat(100)}`,
+  }));
+  fake.route = failedJob(many, recorded("job.log"));
+  const log = await askLog();
+  expect(log.length).toBeLessThanOrEqual(3000);
+  expect(log).toStartWith("Annotations on the failed check");
+  expect(log).toContain("test/a.test.ts:1: test 0\nerror: x");
+  expect(log).toEndWith("…");
+});
+
+test("log without annotations or lines about failures answers the end of the job's log, without GitHub's times", async () => {
+  const lines = Array.from({ length: 40 }, (_, n) => `2026-11-09T10:00:00.1234567Z line ${n}`);
+  fake.route = failedJob([], lines.join("\n"));
+  expect((await askLog()).split("\n")).toEqual([
+    "The end of the job's log:",
+    ...Array.from({ length: 30 }, (_, n) => `line ${n + 10}`),
+  ]);
 });
 
 test("log of a check that isn't from GitHub Actions answers its summary", async () => {
@@ -790,9 +1217,7 @@ test("log of a check that isn't from GitHub Actions answers its summary", async 
     asked.path === "/api/repos/simon/app/check-runs/9"
       ? json({ output: { title: "Lint failed", summary: "3 problems", text: null } })
       : world(asked);
-  expect(await ask({ ask: "log", repository: "simon/app", check: "9" })).toEqual({
-    log: "Lint failed\n\n3 problems",
-  });
+  expect(await askLog()).toBe("The check's summary:\nLint failed\n\n3 problems");
 });
 
 test("wake and unwake ask skel's service to pass on, or stop, the repository's wake-ups", async () => {

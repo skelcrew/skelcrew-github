@@ -73,7 +73,7 @@ Each question names its kind in `ask`. A repository is named `owner/name`, its k
 | `review` | `repository`, `pr`, `commit`, `verdict` (`approve` or `changes`), `body` | `{ id }` |
 | `status` | `repository`, `commit`, `state` (`pending`, `success` or `failure`), `description` | `null`, after setting the `skelcrew/check` status check |
 | `seen` | `repository`, `pr`, `kind` (`comment` or `review`), `id` | `null`, after reacting with 👀 to a person's comment or review that skel typed into the builder. A review is reacted to itself, not its line comments, through GitHub's GraphQL API, as its REST API has no reactions on a review |
-| `log` | `repository`, `check` | `{ log }`: the end of the failed check's log |
+| `log` | `repository`, `check` | `{ log }`: what failed, within 3000 characters, each part under a heading saying what it is: first the check's failure annotations, which name the failing tests and their errors, leaving out GitHub's own "Process completed with exit code" one; then the lines from the failed step's log that say what failed (`(fail)`, `error:`, `FAIL`, `✗` or `Error`), each with a few lines around it and without repeats, leaving out the post-job cleanup. Only when both are empty, the end of the job's log, or the summary of a check not from GitHub Actions |
 | `wake`, `unwake` | `repository`, `url` | `null`, after asking Skelcrew's service to start or stop passing wake-ups to the address |
 
 **`changed`** reads one GraphQL query per repository, whatever the number of PRs Skelcrew

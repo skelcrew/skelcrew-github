@@ -174,6 +174,24 @@ async function mergePr(
   return { refused: typeof said === "string" ? said : `GitHub answered ${merged.status}` };
 }
 
+// Answers `edit pr`: replaces the PR's description with the body given, as it is, so the PR
+// follows the latest round's summary. Skelcrew keeps its own lines, such as "Closes #12", in
+// the body it sends. Answers whether GitHub took the change: a PR it won't let the app edit,
+// such as a missing one or one the app lacks the permission for, answers false.
+async function editPr(repository: string, pr: number, body: string): Promise<{ edited: boolean }> {
+  // GitHub answers 403 for an app lacking the permission, 404 and 410 for a PR that isn't
+  // there, and 422 for an edit it refuses. Each is a PR that can't be edited, not a failure.
+  const edited = await rest(
+    repository,
+    `edit #${pr}`,
+    "PATCH",
+    `/pulls/${pr}`,
+    { body },
+    [403, 404, 410, 422],
+  );
+  return { edited: edited.status === 200 };
+}
+
 // Answers `close pr`: posts the comment when there is one, so the PR says why it closed, then
 // closes the PR and deletes its branch, as skel's sc rm removes the thread behind it. A branch
 // already gone, such as one GitHub deleted itself, counts as deleted.
@@ -347,6 +365,12 @@ async function answer(question: Record<string, unknown>): Promise<unknown> {
     if (!/^[0-9a-f]{40}$/.test(commit)) throw new Error(`${commit} isn't a commit`);
     return mergePr(repository, numberOf(question.pr, "a PR's number"), commit);
   }
+  if (ask === "edit pr")
+    return editPr(
+      repository,
+      numberOf(question.pr, "a PR's number"),
+      text(question.body, "the body"),
+    );
   if (ask === "close pr") {
     // Only what a branch skel names holds, so nothing else reaches a GitHub path.
     const branch = text(question.branch, "the branch");

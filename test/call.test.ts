@@ -607,6 +607,45 @@ test("open pr answers the PR already open from the branch, or opens one", async 
   expect(sent("/api/repos/simon/app/pulls")).toEqual([]);
 });
 
+// The body goes to GitHub as it is, Skelcrew's own lines and all. A PR GitHub won't let the app
+// edit answers false, and any other failure fails.
+test("edit pr replaces the PR's description, or answers false where GitHub won't edit it", async () => {
+  let answer: [number, string] | null = null;
+  fake.route = (asked) => {
+    if (asked.method === "PATCH" && asked.path === "/api/repos/simon/app/pulls/26")
+      return answer
+        ? json({ message: answer[1] }, answer[0])
+        : json({ number: 26, body: JSON.parse(asked.body).body });
+    return world(asked);
+  };
+  const question = {
+    ask: "edit pr",
+    repository: "simon/app",
+    pr: 26,
+    body: "Fix the login, round two.\n\nCloses #12",
+  };
+  expect(await ask(question)).toEqual({ edited: true });
+  const github = fake.asked.filter((a) => a.path.startsWith("/api/repos/simon/app/"));
+  expect(github.map((a) => `${a.method} ${a.path} ${a.auth}`)).toEqual([
+    "PATCH /api/repos/simon/app/pulls/26 Bearer ghs_app",
+  ]);
+  expect(sent("/api/repos/simon/app/pulls/26")).toEqual([
+    { body: "Fix the login, round two.\n\nCloses #12" },
+  ]);
+
+  for (const refusal of [
+    [404, "Not Found"],
+    [403, "Resource not accessible by integration"],
+    [422, "Validation Failed"],
+  ] as [number, string][]) {
+    answer = refusal;
+    expect(await ask(question)).toEqual({ edited: false });
+  }
+  answer = [500, "Server Error"];
+  await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Server Error");
+  await expect(ask({ ...question, pr: "26/merge" })).rejects.toThrow("isn't a PR's number");
+});
+
 // A branch GitHub already deleted, such as with "delete branch on merge" or by hand, answers
 // 422, and the question still succeeds, as the branch is gone either way. GitHub answers 422
 // too when it refuses to delete one, such as a protected branch, which must fail.

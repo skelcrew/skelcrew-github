@@ -180,7 +180,8 @@ async function mergePr(
 // such as a missing one or one the app lacks the permission for, answers false.
 async function editPr(repository: string, pr: number, body: string): Promise<{ edited: boolean }> {
   // GitHub answers 403 for an app lacking the permission, 404 and 410 for a PR that isn't
-  // there, and 422 for an edit it refuses. Each is a PR that can't be edited, not a failure.
+  // there, and 422 for an edit it refuses. Each is a PR that can't be edited, not a failure,
+  // unless GitHub is only asking to slow down.
   const edited = await rest(
     repository,
     `edit #${pr}`,
@@ -189,7 +190,18 @@ async function editPr(repository: string, pr: number, body: string): Promise<{ e
     { body },
     [403, 404, 410, 422],
   );
-  return { edited: edited.status === 200 };
+  if (edited.status === 200) return { edited: true };
+  // GitHub answers 403 for a rate limit too, and 422 for edits sent too quickly, which pass
+  // on their own, so they fail as other calls do. Only its words tell them apart, in its
+  // message or, for a 422, in the errors it lists.
+  const said = JSON.stringify(edited.body ?? {});
+  if (/rate limit|too quickly|abuse/i.test(said)) {
+    const message = record(edited.body ?? {}, "GitHub's answer").message;
+    throw new Error(
+      `couldn't edit #${pr}: GitHub said ${typeof message === "string" ? message : edited.status}`,
+    );
+  }
+  return { edited: false };
 }
 
 // Answers `close pr`: posts the comment when there is one, so the PR says why it closed, then

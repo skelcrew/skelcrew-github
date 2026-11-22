@@ -641,7 +641,28 @@ test("edit pr replaces the PR's description, or answers false where GitHub won't
     answer = refusal;
     expect(await ask(question)).toEqual({ edited: false });
   }
-  answer = [500, "Server Error"];
+  // A rate limit or an edit sent too quickly passes on its own, so it fails instead.
+  answer = [403, "API rate limit exceeded for installation ID 1."];
+  await expect(ask(question)).rejects.toThrow("API rate limit exceeded");
+  answer = [403, "You have exceeded a secondary rate limit. Please wait a few minutes."];
+  await expect(ask(question)).rejects.toThrow("secondary rate limit");
+  fake.route = (asked) =>
+    asked.method === "PATCH" && asked.path === "/api/repos/simon/app/pulls/26"
+      ? json(
+          {
+            message: "Validation Failed",
+            errors: [
+              { resource: "PullRequest", code: "custom", message: "was submitted too quickly" },
+            ],
+          },
+          422,
+        )
+      : world(asked);
+  await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Validation Failed");
+  fake.route = (asked) =>
+    asked.method === "PATCH" && asked.path === "/api/repos/simon/app/pulls/26"
+      ? json({ message: "Server Error" }, 500)
+      : world(asked);
   await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Server Error");
   await expect(ask({ ...question, pr: "26/merge" })).rejects.toThrow("isn't a PR's number");
 });

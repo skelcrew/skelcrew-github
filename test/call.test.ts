@@ -607,16 +607,19 @@ test("open pr answers the PR already open from the branch, or opens one", async 
   expect(sent("/api/repos/simon/app/pulls")).toEqual([]);
 });
 
-// The body goes to GitHub as it is, Skelcrew's own lines and all. A PR GitHub won't let the app
-// edit answers false, and any other failure fails.
-test("edit pr replaces the PR's description, or answers false where GitHub won't edit it", async () => {
-  let answer: [number, string] | null = null;
+// The body goes to GitHub as it is, Skelcrew's own lines and all. A PR closed or merged, which
+// GitHub would let the app edit, is left be and answers false, as does one GitHub won't let the
+// app edit. Any other failure fails, a rate limit or an edit sent too quickly too.
+test("edit pr replaces an open PR's description, or answers false where it can't be edited", async () => {
+  let pr: object = { number: 26, state: "open", merged: false };
+  let reading: Response | null = null;
+  let editing: Response | null = null;
   fake.route = (asked) => {
-    if (asked.method === "PATCH" && asked.path === "/api/repos/simon/app/pulls/26")
-      return answer
-        ? json({ message: answer[1] }, answer[0])
-        : json({ number: 26, body: JSON.parse(asked.body).body });
-    return world(asked);
+    if (asked.path !== "/api/repos/simon/app/pulls/26") return world(asked);
+    if (asked.method === "GET") return reading ?? json(pr);
+    if (asked.method === "PATCH")
+      return editing ?? json({ number: 26, body: JSON.parse(asked.body).body });
+    return undefined;
   };
   const question = {
     ask: "edit pr",
@@ -624,45 +627,59 @@ test("edit pr replaces the PR's description, or answers false where GitHub won't
     pr: 26,
     body: "Fix the login, round two.\n\nCloses #12",
   };
+  const edits = () => fake.asked.filter((a) => a.method === "PATCH");
   expect(await ask(question)).toEqual({ edited: true });
   const github = fake.asked.filter((a) => a.path.startsWith("/api/repos/simon/app/"));
   expect(github.map((a) => `${a.method} ${a.path} ${a.auth}`)).toEqual([
+    "GET /api/repos/simon/app/pulls/26 Bearer ghs_app",
     "PATCH /api/repos/simon/app/pulls/26 Bearer ghs_app",
   ]);
-  expect(sent("/api/repos/simon/app/pulls/26")).toEqual([
+  expect(edits().map((a) => JSON.parse(a.body))).toEqual([
     { body: "Fix the login, round two.\n\nCloses #12" },
   ]);
 
-  for (const refusal of [
+  // Closed and merged PRs are never edited.
+  for (const state of [
+    { number: 26, state: "closed", merged: false },
+    { number: 26, state: "closed", merged: true },
+  ]) {
+    pr = state;
+    fake.asked = [];
+    expect(await ask(question)).toEqual({ edited: false });
+    expect(edits()).toEqual([]);
+  }
+  pr = { number: 26, state: "open", merged: false };
+
+  // A PR missing, or the app lacking the permission, whether in reading or in editing.
+  const refusals: [number, string][] = [
     [404, "Not Found"],
     [403, "Resource not accessible by integration"],
-    [422, "Validation Failed"],
-  ] as [number, string][]) {
-    answer = refusal;
+  ];
+  for (const [status, message] of refusals) {
+    reading = json({ message }, status);
     expect(await ask(question)).toEqual({ edited: false });
   }
+  reading = null;
+  for (const [status, message] of [...refusals, [422, "Validation Failed"] as [number, string]]) {
+    editing = json({ message }, status);
+    expect(await ask(question)).toEqual({ edited: false });
+  }
+
   // A rate limit or an edit sent too quickly passes on its own, so it fails instead.
-  answer = [403, "API rate limit exceeded for installation ID 1."];
-  await expect(ask(question)).rejects.toThrow("API rate limit exceeded");
-  answer = [403, "You have exceeded a secondary rate limit. Please wait a few minutes."];
-  await expect(ask(question)).rejects.toThrow("secondary rate limit");
-  fake.route = (asked) =>
-    asked.method === "PATCH" && asked.path === "/api/repos/simon/app/pulls/26"
-      ? json(
-          {
-            message: "Validation Failed",
-            errors: [
-              { resource: "PullRequest", code: "custom", message: "was submitted too quickly" },
-            ],
-          },
-          422,
-        )
-      : world(asked);
+  reading = json({ message: "API rate limit exceeded for installation ID 1." }, 403);
+  await expect(ask(question)).rejects.toThrow("couldn't read #26: GitHub said API rate limit");
+  reading = null;
+  editing = json({ message: "You have exceeded a secondary rate limit. Please wait." }, 403);
+  await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said You have exceeded");
+  editing = json(
+    {
+      message: "Validation Failed",
+      errors: [{ resource: "PullRequest", code: "custom", message: "was submitted too quickly" }],
+    },
+    422,
+  );
   await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Validation Failed");
-  fake.route = (asked) =>
-    asked.method === "PATCH" && asked.path === "/api/repos/simon/app/pulls/26"
-      ? json({ message: "Server Error" }, 500)
-      : world(asked);
+  editing = json({ message: "Server Error" }, 500);
   await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Server Error");
   await expect(ask({ ...question, pr: "26/merge" })).rejects.toThrow("isn't a PR's number");
 });

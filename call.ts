@@ -174,33 +174,36 @@ async function mergePr(
   return { refused: typeof said === "string" ? said : `GitHub answered ${merged.status}` };
 }
 
+// Throws when GitHub's refusal is only it asking to slow down: a rate limit, which it answers
+// with 403, or edits sent too quickly, with 422. Those pass on their own, so they fail as other
+// calls do. Only its words tell them apart, in its message or, for a 422, the errors it lists.
+function unlessSlowedDown(answered: { status: number; body: unknown }, doing: string): void {
+  if (!/rate limit|too quickly|abuse/i.test(JSON.stringify(answered.body ?? {}))) return;
+  const message = record(answered.body ?? {}, "GitHub's answer").message;
+  throw new Error(
+    `couldn't ${doing}: GitHub said ${typeof message === "string" ? message : answered.status}`,
+  );
+}
+
 // Answers `edit pr`: replaces the PR's description with the body given, as it is, so the PR
 // follows the latest round's summary. Skelcrew keeps its own lines, such as "Closes #12", in
-// the body it sends. Answers whether GitHub took the change: a PR it won't let the app edit,
-// such as a missing one or one the app lacks the permission for, answers false.
+// the body it sends. Answers whether GitHub took the change. A PR that can't be edited answers
+// false: one closed or merged, which GitHub would let the app edit, so it is read first, one
+// missing, or one the app lacks the permission for.
 async function editPr(repository: string, pr: number, body: string): Promise<{ edited: boolean }> {
   // GitHub answers 403 for an app lacking the permission, 404 and 410 for a PR that isn't
   // there, and 422 for an edit it refuses. Each is a PR that can't be edited, not a failure,
   // unless GitHub is only asking to slow down.
-  const edited = await rest(
-    repository,
-    `edit #${pr}`,
-    "PATCH",
-    `/pulls/${pr}`,
-    { body },
-    [403, 404, 410, 422],
-  );
-  if (edited.status === 200) return { edited: true };
-  // GitHub answers 403 for a rate limit too, and 422 for edits sent too quickly, which pass
-  // on their own, so they fail as other calls do. Only its words tell them apart, in its
-  // message or, for a 422, in the errors it lists.
-  const said = JSON.stringify(edited.body ?? {});
-  if (/rate limit|too quickly|abuse/i.test(said)) {
-    const message = record(edited.body ?? {}, "GitHub's answer").message;
-    throw new Error(
-      `couldn't edit #${pr}: GitHub said ${typeof message === "string" ? message : edited.status}`,
-    );
+  const refusals = [403, 404, 410, 422];
+  const read = await rest(repository, `read #${pr}`, "GET", `/pulls/${pr}`, undefined, refusals);
+  if (read.status !== 200) {
+    unlessSlowedDown(read, `read #${pr}`);
+    return { edited: false };
   }
+  if (record(read.body, "the PR").state !== "open") return { edited: false };
+  const edited = await rest(repository, `edit #${pr}`, "PATCH", `/pulls/${pr}`, { body }, refusals);
+  if (edited.status === 200) return { edited: true };
+  unlessSlowedDown(edited, `edit #${pr}`);
   return { edited: false };
 }
 

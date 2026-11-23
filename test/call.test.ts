@@ -607,6 +607,83 @@ test("open pr answers the PR already open from the branch, or opens one", async 
   expect(sent("/api/repos/simon/app/pulls")).toEqual([]);
 });
 
+// The body goes to GitHub as it is, Skelcrew's own lines and all. A PR closed or merged, which
+// GitHub would let the app edit, is left be and answers false, as does one GitHub won't let the
+// app edit. Any other failure fails, a rate limit or an edit sent too quickly too.
+test("edit pr replaces an open PR's description, or answers false where it can't be edited", async () => {
+  let pr: object = { number: 26, state: "open", merged: false };
+  let reading: Response | null = null;
+  let editing: Response | null = null;
+  fake.route = (asked) => {
+    if (asked.path !== "/api/repos/simon/app/pulls/26") return world(asked);
+    if (asked.method === "GET") return reading ?? json(pr);
+    if (asked.method === "PATCH")
+      return editing ?? json({ number: 26, body: JSON.parse(asked.body).body });
+    return undefined;
+  };
+  const question = {
+    ask: "edit pr",
+    repository: "simon/app",
+    pr: 26,
+    body: "Fix the login, round two.\n\nCloses #12",
+  };
+  const edits = () => fake.asked.filter((a) => a.method === "PATCH");
+  expect(await ask(question)).toEqual({ edited: true });
+  const github = fake.asked.filter((a) => a.path.startsWith("/api/repos/simon/app/"));
+  expect(github.map((a) => `${a.method} ${a.path} ${a.auth}`)).toEqual([
+    "GET /api/repos/simon/app/pulls/26 Bearer ghs_app",
+    "PATCH /api/repos/simon/app/pulls/26 Bearer ghs_app",
+  ]);
+  expect(edits().map((a) => JSON.parse(a.body))).toEqual([
+    { body: "Fix the login, round two.\n\nCloses #12" },
+  ]);
+
+  // Closed and merged PRs are never edited.
+  for (const state of [
+    { number: 26, state: "closed", merged: false },
+    { number: 26, state: "closed", merged: true },
+  ]) {
+    pr = state;
+    fake.asked = [];
+    expect(await ask(question)).toEqual({ edited: false });
+    expect(edits()).toEqual([]);
+  }
+  pr = { number: 26, state: "open", merged: false };
+
+  // A PR missing, or the app lacking the permission, whether in reading or in editing.
+  const refusals: [number, string][] = [
+    [404, "Not Found"],
+    [403, "Resource not accessible by integration"],
+  ];
+  for (const [status, message] of refusals) {
+    reading = json({ message }, status);
+    expect(await ask(question)).toEqual({ edited: false });
+  }
+  reading = null;
+  for (const [status, message] of [...refusals, [422, "Validation Failed"] as [number, string]]) {
+    editing = json({ message }, status);
+    expect(await ask(question)).toEqual({ edited: false });
+  }
+
+  // A rate limit or an edit sent too quickly passes on its own, so it fails instead.
+  reading = json({ message: "API rate limit exceeded for installation ID 1." }, 403);
+  await expect(ask(question)).rejects.toThrow("couldn't read #26: GitHub said API rate limit");
+  reading = null;
+  editing = json({ message: "You have exceeded a secondary rate limit. Please wait." }, 403);
+  await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said You have exceeded");
+  editing = json(
+    {
+      message: "Validation Failed",
+      errors: [{ resource: "PullRequest", code: "custom", message: "was submitted too quickly" }],
+    },
+    422,
+  );
+  await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Validation Failed");
+  editing = json({ message: "Server Error" }, 500);
+  await expect(ask(question)).rejects.toThrow("couldn't edit #26: GitHub said Server Error");
+  await expect(ask({ ...question, pr: "26/merge" })).rejects.toThrow("isn't a PR's number");
+});
+
 // A branch GitHub already deleted, such as with "delete branch on merge" or by hand, answers
 // 422, and the question still succeeds, as the branch is gone either way. GitHub answers 422
 // too when it refuses to delete one, such as a protected branch, which must fail.

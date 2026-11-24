@@ -318,6 +318,22 @@ async function assign(repository: string, task: number, on: boolean) {
   return { assigned: true };
 }
 
+// Answers `close task`: posts the comment on the issue if there is one, then closes it as not
+// planned. An issue already closed keeps its state and reason, as someone closed it on purpose.
+async function closeTask(repository: string, task: number, comment: string | null) {
+  if (comment !== null)
+    await rest(repository, `comment on #${task}`, "POST", `/issues/${task}/comments`, {
+      body: comment,
+    });
+  const issue = await rest(repository, `read #${task}`, "GET", `/issues/${task}`);
+  if (record(issue.body, "the issue").state === "closed") return null;
+  await rest(repository, `close #${task}`, "PATCH", `/issues/${task}`, {
+    state: "closed",
+    state_reason: "not_planned",
+  });
+  return null;
+}
+
 // Returns the answer to one question from skel.
 async function answer(question: Record<string, unknown>): Promise<unknown> {
   const ask = text(question.ask, "the question");
@@ -357,6 +373,12 @@ async function answer(question: Record<string, unknown>): Promise<unknown> {
       throw new Error("whether to assign you isn't what the GitHub plugin expects");
     return assign(repository, numberOf(question.task, "an issue's number"), question.on);
   }
+  if (ask === "close task")
+    return closeTask(
+      repository,
+      numberOf(question.task, "an issue's number"),
+      question.comment == null ? null : text(question.comment, "the comment"),
+    );
   if (ask === "seen") {
     const kind = text(question.kind, "the kind");
     if (kind !== "comment" && kind !== "review")

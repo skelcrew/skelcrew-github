@@ -196,6 +196,81 @@ test("assign refuses an issue or an on it can't send to GitHub", async () => {
   expect(fake.asked.filter((a) => a.path.startsWith("/api/"))).toEqual([]);
 });
 
+// A GitHub where issue 12 is in `issue`'s state, which a PATCH on it changes, as GitHub does.
+type Issue = { state: string; state_reason: string | null };
+function closing(issue: Issue) {
+  return (asked: Asked): Response | undefined => {
+    const { method, path } = asked;
+    if (method === "POST" && path === "/api/repos/simon/app/issues/12/comments")
+      return json({ id: 5 }, 201);
+    if (path !== "/api/repos/simon/app/issues/12") return world(asked);
+    if (method === "PATCH") Object.assign(issue, JSON.parse(asked.body));
+    return json({ number: 12, ...issue });
+  };
+}
+
+const closeTask = {
+  ask: "close task",
+  repository: "simon/app",
+  task: "12",
+  comment: "Closed by Skelcrew: not needed",
+};
+
+test("close task comments on the issue and closes it as not planned, as the app", async () => {
+  const issue: Issue = { state: "open", state_reason: null };
+  fake.route = closing(issue);
+  expect(await ask(closeTask)).toBeNull();
+  const github = fake.asked.filter((a) => a.path.startsWith("/api/repos/simon/app/"));
+  expect(github.map((a) => `${a.method} ${a.path}`)).toEqual([
+    "POST /api/repos/simon/app/issues/12/comments",
+    "GET /api/repos/simon/app/issues/12",
+    "PATCH /api/repos/simon/app/issues/12",
+  ]);
+  expect(github.map((a) => a.auth)).toEqual(["Bearer ghs_app", "Bearer ghs_app", "Bearer ghs_app"]);
+  expect(sent("/api/repos/simon/app/issues/12/comments")).toEqual([
+    { body: "Closed by Skelcrew: not needed" },
+  ]);
+  expect(issue).toEqual({ state: "closed", state_reason: "not_planned" });
+});
+
+test("close task with no comment only closes the issue", async () => {
+  const issue: Issue = { state: "open", state_reason: null };
+  fake.route = closing(issue);
+  expect(await ask({ ...closeTask, comment: null })).toBeNull();
+  expect(sent("/api/repos/simon/app/issues/12/comments")).toEqual([]);
+  expect(issue).toEqual({ state: "closed", state_reason: "not_planned" });
+});
+
+test("close task comments on an issue already closed, and leaves it closed as it was", async () => {
+  const issue = { state: "closed", state_reason: "completed" };
+  fake.route = closing(issue);
+  expect(await ask(closeTask)).toBeNull();
+  expect(sent("/api/repos/simon/app/issues/12/comments")).toEqual([
+    { body: "Closed by Skelcrew: not needed" },
+  ]);
+  expect(fake.asked.filter((a) => a.method === "PATCH")).toEqual([]);
+  expect(issue).toEqual({ state: "closed", state_reason: "completed" });
+});
+
+test("close task fails when GitHub won't close the issue", async () => {
+  fake.route = (asked) =>
+    asked.method === "PATCH" && asked.path === "/api/repos/simon/app/issues/12"
+      ? json({ message: "Must have admin rights to Repository." }, 403)
+      : closing({ state: "open", state_reason: null })(asked);
+  await expect(ask({ ...closeTask, comment: null })).rejects.toThrow(
+    "Must have admin rights to Repository.",
+  );
+});
+
+test("close task refuses an issue or a comment it can't send to GitHub", async () => {
+  await expect(ask({ ...closeTask, task: "../1" })).rejects.toThrow("isn't an issue's number");
+  await expect(ask({ ...closeTask, task: -3 })).rejects.toThrow("isn't an issue's number");
+  for (const task of ["0", "000", 0])
+    await expect(ask({ ...closeTask, task })).rejects.toThrow("isn't an issue's number");
+  await expect(ask({ ...closeTask, comment: 7 })).rejects.toThrow();
+  expect(fake.asked.filter((a) => a.path.startsWith("/api/"))).toEqual([]);
+});
+
 test("seen reacts with eyes to a PR comment as the app", async () => {
   fake.route = (asked) =>
     asked.path === "/api/repos/simon/app/issues/comments/77/reactions"

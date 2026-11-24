@@ -90,7 +90,11 @@ test("setup signs you in, has you install the app on the checkout's repository w
   expect(code).toBe(0);
   expect(out).toBe(
     [
-      "Sign in to GitHub: open https://github.com/login/device and enter ABCD-1234.",
+      "Sign in to GitHub:",
+      "",
+      "  https://github.com/login/device",
+      "  Code: ABCD-1234",
+      "",
       "Signed in to GitHub as simon.",
       "Skelcrew's GitHub App needs to be installed on simon/app. Open this link:",
       `${install}/permissions?suggested_target_id=1234&repository_ids[]=5678`,
@@ -187,31 +191,96 @@ test("outside a checkout on GitHub, setup waits for the app on any repository", 
   expect(asked("/api/repos/")).toEqual([]);
 });
 
-test("on a desktop, Enter opens each page in your browser, and the links aren't printed", async () => {
+// Puts a desktop on PATH whose browser notes each page it is asked to open, in `dir`'s opened.
+function desktop(): Record<string, string> {
   const bin = join(dir, "bin");
   mkdirSync(bin);
   for (const name of ["open", "xdg-open"]) {
     writeFileSync(join(bin, name), `#!/bin/sh\necho "$1" >> "${join(dir, "opened")}"\n`);
     chmodSync(join(bin, name), 0o755);
   }
-  const { code, out } = await run(fake.url, dir, ["setup.ts"], "\n\n", {
-    SKELCREW_REMOTE: app,
+  return {
     SSH_CONNECTION: "",
     SSH_TTY: "",
     DISPLAY: ":0",
     PATH: `${bin}:${process.env.PATH ?? ""}`,
+  };
+}
+
+// Run with this before setup, its output counts as a terminal's.
+const terminal = ["--preload", join(import.meta.dir, "terminal.ts")];
+const inTerminal = { NO_COLOR: "", TERM: "xterm-256color" };
+
+test("on a desktop, Enter opens each page in your browser, with the sign-in's link and code shown", async () => {
+  const { code, out } = await run(fake.url, dir, ["setup.ts"], "\n\n", {
+    SKELCREW_REMOTE: app,
+    ...desktop(),
   });
   expect(code).toBe(0);
   expect(out).toContain(
-    "Sign in to GitHub with the code ABCD-1234. Press Enter to open your browser.",
+    [
+      "Sign in to GitHub:",
+      "",
+      "  https://github.com/login/device",
+      "  Code: ABCD-1234",
+      "",
+      "Press Enter to open your browser.",
+    ].join("\n"),
   );
   expect(out).toContain(
     "Skelcrew's GitHub App needs to be installed on simon/app. Press Enter to open your browser.",
   );
-  expect(out).not.toContain("https://");
+  expect(out).not.toContain(install);
   expect(readFileSync(join(dir, "opened"), "utf8")).toBe(
     `https://github.com/login/device\n${install}/permissions?suggested_target_id=1234&repository_ids[]=5678\n`,
   );
+});
+
+test("in a terminal, the sign-in's link is underlined and its code bold", async () => {
+  const shown = [
+    "Sign in to GitHub:",
+    "",
+    "  \x1b[4mhttps://github.com/login/device\x1b[24m",
+    "  Code: \x1b[1mABCD-1234\x1b[22m",
+    "",
+  ].join("\n");
+  const printed = await run(fake.url, dir, [...terminal, "setup.ts"], "", {
+    SKELCREW_REMOTE: app,
+    ...inTerminal,
+  });
+  expect(printed.code).toBe(0);
+  expect(printed.out).toStartWith(`${shown}\nSigned in to GitHub as simon.\n`);
+  removeSettings(dir);
+  dir = mkdtempSync(join(tmpdir(), "skelcrew-github-"));
+  polls = 0;
+  installed = [[], [onSimon()]];
+  const opened = await run(fake.url, dir, [...terminal, "setup.ts"], "\n\n", {
+    SKELCREW_REMOTE: app,
+    ...inTerminal,
+    ...desktop(),
+  });
+  expect(opened.code).toBe(0);
+  expect(opened.out).toStartWith(`${shown}\nPress Enter to open your browser.`);
+});
+
+test("a terminal with NO_COLOR, or a dumb one, gets the sign-in's link and code plain", async () => {
+  for (const env of [
+    { NO_COLOR: "1", TERM: "xterm-256color" },
+    { NO_COLOR: "", TERM: "dumb" },
+  ]) {
+    removeSettings(dir);
+    dir = mkdtempSync(join(tmpdir(), "skelcrew-github-"));
+    polls = 0;
+    installed = [[], [onSimon()]];
+    const { code, out } = await run(fake.url, dir, [...terminal, "setup.ts"], "", {
+      SKELCREW_REMOTE: app,
+      ...env,
+    });
+    expect(code).toBe(0);
+    expect(out).toStartWith(
+      "Sign in to GitHub:\n\n  https://github.com/login/device\n  Code: ABCD-1234\n\n",
+    );
+  }
 });
 
 test("setup never asks for the service, and uses the one named in the settings folder", async () => {

@@ -94,11 +94,13 @@ An **item** is a task or a PR:
   "author": { "login": "simon", "bot": false, "you": true, "push": null },
   "labels": ["skelcrew"], "link": "https://github.com/simon/app/issues/12",
   "created": "2026-11-01T10:00:00Z", "updated": "2026-11-09T10:00:00Z",
-  "closes": "Closes #12"
+  "ref": "#12", "closes": "Closes #12"
 }
 ```
 
-A PR has `kind: "pr"`, no `closes`, and adds `branch`, `head` (its head commit), `base`, `conflicts`, `checks` (each with
+A task's `ref` is its number as GitHub writes it, which Skelcrew shows beside the task, and
+`closes` is the line that closes it from a PR's body. A PR has `kind: "pr"`, no `ref` or
+`closes`, and adds `branch`, `head` (its head commit), `base`, `conflicts`, `checks` (each with
 `name`, `id` or null, and `state`: `running`, `passed`, `failed` or `cancelled`), `reviews`
 (each with `id`, `text`, `author`, `verdict` and `lines`) and `comments` (each with `id`,
 `text` and `author`). Its `state` can be `merged`.

@@ -492,6 +492,7 @@ test("changed with no next brings everything open, and the PRs skel watches, in 
     link: "https://github.com/simon/app/issues/12",
     created: "2026-11-01T10:00:00Z",
     updated: "2026-11-09T10:00:00Z",
+    ref: "#12",
     closes: "Closes #12",
   });
   expect(items[2]).toEqual({
@@ -648,6 +649,7 @@ test("create task opens an issue and answers it as a task", async () => {
     link: "https://github.com/simon/app/issues/13",
     created: "2026-11-09T12:00:00Z",
     updated: "2026-11-09T12:00:00Z",
+    ref: "#13",
     closes: "Closes #13",
   });
 });

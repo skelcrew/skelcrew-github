@@ -613,6 +613,28 @@ test("a repository set to assigned has GitHub pass on only issues assigned to yo
   expect(fake.asked.filter((a) => a.path === "/api/graphql").length).toBe(1);
 });
 
+test("repositories.json names a repository whatever its case", async () => {
+  writeFileSync(
+    join(dir, "repositories.json"),
+    JSON.stringify({ "Simon/App": { assigned: true } }),
+  );
+  fake.route = withRepository;
+  await ask({ ask: "changed", repository: "simon/app", jobs: ["tracker"], next: null, prs: [] });
+  const { query } = JSON.parse(fake.asked.find((a) => a.path === "/api/graphql")?.body ?? "");
+  expect(query).toContain('filterBy: { assignee: "simon" }');
+});
+
+test("a repositories.json naming a repository twice in different cases fails plainly", async () => {
+  writeFileSync(
+    join(dir, "repositories.json"),
+    JSON.stringify({ "Simon/App": { assigned: true }, "simon/app": { assigned: false } }),
+  );
+  fake.route = withRepository;
+  await expect(
+    ask({ ask: "changed", repository: "simon/app", jobs: ["tracker"], next: null, prs: [] }),
+  ).rejects.toThrow("repositories.json names simon/app more than once: Simon/App, simon/app");
+});
+
 test("a repositories.json that isn't JSON fails plainly", async () => {
   writeFileSync(join(dir, "repositories.json"), "{ simon/app");
   fake.route = withRepository;

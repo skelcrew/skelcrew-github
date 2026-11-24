@@ -265,6 +265,8 @@ test("close task fails when GitHub won't close the issue", async () => {
 test("close task refuses an issue or a comment it can't send to GitHub", async () => {
   await expect(ask({ ...closeTask, task: "../1" })).rejects.toThrow("isn't an issue's number");
   await expect(ask({ ...closeTask, task: -3 })).rejects.toThrow("isn't an issue's number");
+  for (const task of ["0", "000", 0])
+    await expect(ask({ ...closeTask, task })).rejects.toThrow("isn't an issue's number");
   await expect(ask({ ...closeTask, comment: 7 })).rejects.toThrow();
   expect(fake.asked.filter((a) => a.path.startsWith("/api/"))).toEqual([]);
 });

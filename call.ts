@@ -373,12 +373,16 @@ async function answer(question: Record<string, unknown>): Promise<unknown> {
       throw new Error("whether to assign you isn't what the GitHub plugin expects");
     return assign(repository, numberOf(question.task, "an issue's number"), question.on);
   }
-  if (ask === "close task")
+  if (ask === "close task") {
+    const task = numberOf(question.task, "an issue's number");
+    // GitHub numbers issues from 1, so 0 is no issue and isn't sent.
+    if (task < 1) throw new Error(`${task} isn't an issue's number`);
     return closeTask(
       repository,
-      numberOf(question.task, "an issue's number"),
+      task,
       question.comment == null ? null : text(question.comment, "the comment"),
     );
+  }
   if (ask === "seen") {
     const kind = text(question.kind, "the kind");
     if (kind !== "comment" && kind !== "review")

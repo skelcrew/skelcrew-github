@@ -34,7 +34,7 @@ type Common = {
 type CheckState = "running" | "passed" | "failed" | "cancelled";
 type Verdict = "approved" | "changes requested" | "commented" | "dismissed";
 export type Item =
-  | ({ kind: "task"; closes: string } & Common)
+  | ({ kind: "task"; ref: string; closes: string } & Common)
   | ({
       kind: "pr";
       branch: string;
@@ -116,11 +116,12 @@ const verdicts: Record<string, Verdict> = {
   DISMISSED: "dismissed",
 };
 
-// Returns an issue as a task, with the line that closes it from a PR's body.
+// Returns an issue as a task, with its number as GitHub writes it and the line that closes it
+// from a PR's body.
 function taskOf(node: Record<string, unknown>, you: string): Item {
   const common = commonOf(node, you);
   const state = node.state === "OPEN" ? "open" : "closed";
-  return { kind: "task", ...common, state, closes: `Closes #${common.id}` };
+  return { kind: "task", ...common, state, ref: `#${common.id}`, closes: `Closes #${common.id}` };
 }
 
 // Returns a PR as an item, with its head commit, which Skelcrew merges only while it is still the

@@ -103,6 +103,7 @@ async function createTask(repository: string, title: string, body: string): Prom
     link: text(issue.html_url, "the issue's link"),
     created: text(issue.created_at, "when the issue was created"),
     updated: text(issue.updated_at, "when the issue was updated"),
+    ref: `#${id}`,
     closes: `Closes #${id}`,
   };
 }

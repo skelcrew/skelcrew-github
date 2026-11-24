@@ -59,16 +59,15 @@ async function deviceFlow(clientId: string): Promise<unknown> {
   const code = text(device.user_code, "GitHub's code");
   const link = text(device.verification_uri, "GitHub's link");
   let wait = typeof device.interval === "number" ? device.interval : 5;
-  // The code is what you type on GitHub's page, so it stands out in bold. Only in a terminal
-  // that shows bold, so a log or a pipe gets the plain code.
-  const bold =
+  // The link and the code each get a line of their own, so they are easy to copy. The code is
+  // what you type on GitHub's page, so it stands out in bold, and the link is underlined. Only
+  // in a terminal that shows them, so a log or a pipe gets plain text with the same layout.
+  const styled =
     Boolean(process.stdout.isTTY) && !process.env.NO_COLOR && process.env.TERM !== "dumb";
-  const shown = bold ? `\x1b[1m${code}\x1b[22m` : code;
-  sendTo(
-    link,
-    `Sign in to GitHub with the code ${shown}. Press Enter to open your browser.`,
-    (url) => `Sign in to GitHub: open ${url} and enter ${shown}.`,
-  );
+  const shownCode = styled ? `\x1b[1m${code}\x1b[22m` : code;
+  const shown = (url: string) =>
+    `Sign in to GitHub:\n\n  ${styled ? `\x1b[4m${url}\x1b[24m` : url}\n  Code: ${shownCode}\n`;
+  sendTo(link, `${shown(link)}\nPress Enter to open your browser.`, shown);
   for (;;) {
     await Bun.sleep(wait * 1000);
     const asked = await fetch("https://github.com/login/oauth/access_token", {

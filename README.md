@@ -50,6 +50,24 @@ Its settings and tokens are in the folder Skelcrew gives it, in
 address and your sign-in, `tokens.json` each repository's token, and `push.json` who can push,
 for a few minutes. Agents never see them.
 
+### Only issues assigned to you
+
+As a repository's tracker, the plugin passes on every open issue in it, so Skelcrew's backlog
+is the whole repository's. To have it pass on only the issues assigned to you, the GitHub
+login the setup signed in as, name the repository in a file named `repositories.json` in the
+plugin's settings folder, with `assigned` on:
+
+```json
+{ "simon/app": { "assigned": true } }
+```
+
+It is off for any repository not in the file, and without the file. GitHub does the
+filtering, in the same query, so it costs no request more. Closed issues updated since the
+last poll come only if they are assigned to you too. PRs aren't affected.
+
+An issue that is no longer assigned to you no longer comes, so check how Skelcrew treats a
+running task whose issue is unassigned before you turn this on.
+
 ## Calls
 
 Skelcrew runs `bun call.ts` with one JSON question on stdin, and reads one JSON answer from
@@ -79,7 +97,8 @@ Each question names its kind in `ask`. A repository is named `owner/name`, its k
 
 **`changed`** reads one GraphQL query per repository, whatever the number of PRs Skelcrew
 watches. Without `next`, it brings everything open. With it, everything updated since, closed
-and merged ones too. Issues come only as the repository's tracker, and PRs only as its forge.
+and merged ones too. For a repository set to [only issues assigned to
+you](#only-issues-assigned-to-you), issues are only those assigned to you. Issues come only as the repository's tracker, and PRs only as its forge.
 As the forge, the PRs in `prs` come too, whatever changed, since GitHub doesn't count a
 finished check as a change to its PR. A list longer than one page is read to its end. As the
 tracker, the first ask with no `next` creates the `skelcrew` label in the repository. `next` is

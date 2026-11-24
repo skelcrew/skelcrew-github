@@ -1,7 +1,7 @@
 // What changed in a repository's issues and PRs, as items in skel's words, read with one
 // GraphQL query, however many PRs skel watches.
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   graphql,
@@ -241,18 +241,51 @@ async function createLabel(repository: string): Promise<void> {
 // Returns one page of the repository's issues or PRs, newest updated first: with `since`,
 // those updated since then, closed ones too; without, every open one. Values go in the query
 // itself, quoted as JSON, as GitHub refuses a query declaring a variable it doesn't use.
-function listQuery(kind: "issues" | "pullRequests", since: string | null, after: string | null) {
+// With `assignee`, issues are only those assigned to that login, filtered by GitHub, so it
+// costs no request more.
+function listQuery(
+  kind: "issues" | "pullRequests",
+  since: string | null,
+  after: string | null,
+  assignee: string | null,
+) {
   const from = after ? `, after: ${JSON.stringify(after)}` : "";
   const states = since ? "" : ", states: [OPEN]";
   const order = "orderBy: { field: UPDATED_AT, direction: DESC }";
   if (kind === "issues") {
-    const filter = since ? `, filterBy: { since: ${JSON.stringify(since)} }` : "";
+    const by = [
+      ...(assignee ? [`assignee: ${JSON.stringify(assignee)}`] : []),
+      ...(since ? [`since: ${JSON.stringify(since)}`] : []),
+    ];
+    const filter = by.length > 0 ? `, filterBy: { ${by.join(", ")} }` : "";
     return `issues(first: 100${from}${states}${filter}, ${order}) {
       pageInfo { hasNextPage endCursor } nodes { ${itemFields} state } }`;
   }
   // Each PR costs more than an issue, and few change between two polls.
   return `pullRequests(first: ${since ? 10 : 50}${from}${states}, ${order}) {
     pageInfo { hasNextPage endCursor } nodes { ${itemFields} ${pullFields(10)} } }`;
+}
+
+// Returns whether the repository's tracker passes on only the issues assigned to you, as
+// `assigned: true` under its name in repositories.json, in the plugin's settings folder, says.
+// Off without the file, or without the repository in it.
+function assignedOnly(repository: string): boolean {
+  const file = join(settingsDir(), "repositories.json");
+  if (!existsSync(file)) return false;
+  const written = readFileSync(file, "utf8");
+  let saved: unknown;
+  try {
+    saved = JSON.parse(written);
+  } catch (error) {
+    throw new Error(`the plugin's repositories.json isn't JSON: ${String(error)}`);
+  }
+  const mine = record(saved, "the plugin's repositories.json")[repository];
+  if (mine === undefined) return false;
+  const assigned = record(mine, `${repository} in repositories.json`).assigned;
+  if (assigned === undefined) return false;
+  if (typeof assigned !== "boolean")
+    throw new Error(`assigned for ${repository} in repositories.json isn't true or false`);
+  return assigned;
 }
 
 // Answers `changed`: what changed in the repository since `next`, or everything open without
@@ -270,6 +303,7 @@ export async function changed(
   const tracker = jobs.includes("tracker");
   const forge = jobs.includes("forge");
   const you = settings().login;
+  const assignee = tracker && assignedOnly(repository) ? you : null;
   // Once per daemon start, which is when skel asks with no `next`.
   if (tracker && next === null) await createLabel(repository);
   const [owner = "", name = ""] = repository.split("/");
@@ -287,7 +321,7 @@ export async function changed(
   ) {
     const lists = (["issues", "pullRequests"] as const).flatMap((kind) => {
       const after = cursor[kind];
-      return after === false ? [] : [`${kind}: ${listQuery(kind, next, after)}`];
+      return after === false ? [] : [`${kind}: ${listQuery(kind, next, after, assignee)}`];
     });
     const watching =
       first && forge

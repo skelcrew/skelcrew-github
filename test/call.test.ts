@@ -1,7 +1,7 @@
 // Tests of the plugin's call command, asked as skel asks it, against a fake GitHub and a fake
 // skel's service.
 import { afterAll, afterEach, beforeEach, expect, test } from "bun:test";
-import { readFileSync } from "node:fs";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { type Asked, json, removeSettings, run, signedIn, startFake } from "./fake.ts";
 
@@ -566,6 +566,59 @@ test("changed with next asks only for what changed since, closed ones too", asyn
   expect(query).not.toContain("states: [OPEN]");
   expect(sent("/api/repos/simon/app/labels")).toEqual([]);
   expect(answer).toMatchObject({ next: "2026-11-09T11:00:00Z" });
+});
+
+test("without repositories.json, changed's query has no assignee", async () => {
+  fake.route = withRepository;
+  for (const next of [null, "2026-11-09T09:00:00Z"]) {
+    fake.asked = [];
+    await ask({ ask: "changed", repository: "simon/app", jobs: ["tracker"], next, prs: [] });
+    const { query } = JSON.parse(fake.asked.find((a) => a.path === "/api/graphql")?.body ?? "");
+    expect(query).not.toContain("assignee");
+  }
+});
+
+test("a repository set to assigned has GitHub pass on only issues assigned to you", async () => {
+  writeFileSync(
+    join(dir, "repositories.json"),
+    JSON.stringify({ "simon/app": { assigned: true }, "simon/other": { assigned: false } }),
+  );
+  fake.route = withRepository;
+  await ask({
+    ask: "changed",
+    repository: "simon/app",
+    jobs: ["tracker", "forge"],
+    next: null,
+    prs: [],
+  });
+  let [graphql] = fake.asked.filter((a) => a.path === "/api/graphql");
+  let { query } = JSON.parse(graphql?.body ?? "");
+  expect(query).toContain('filterBy: { assignee: "simon" }');
+  expect(query).toContain("states: [OPEN]");
+  // PRs aren't filtered.
+  expect(query).toMatch(/pullRequests\(first: 50, states: \[OPEN\], orderBy/);
+  fake.asked = [];
+  await ask({
+    ask: "changed",
+    repository: "simon/app",
+    jobs: ["tracker"],
+    next: "2026-11-09T09:00:00Z",
+    prs: [],
+  });
+  [graphql] = fake.asked.filter((a) => a.path === "/api/graphql");
+  ({ query } = JSON.parse(graphql?.body ?? ""));
+  // Closed ones updated since still come, if they are assigned to you.
+  expect(query).toContain('filterBy: { assignee: "simon", since: "2026-11-09T09:00:00Z" }');
+  expect(query).not.toContain("states: [OPEN]");
+  expect(fake.asked.filter((a) => a.path === "/api/graphql").length).toBe(1);
+});
+
+test("a repositories.json that isn't JSON fails plainly", async () => {
+  writeFileSync(join(dir, "repositories.json"), "{ simon/app");
+  fake.route = withRepository;
+  await expect(
+    ask({ ask: "changed", repository: "simon/app", jobs: ["tracker"], next: null, prs: [] }),
+  ).rejects.toThrow("repositories.json isn't JSON");
 });
 
 test("as the forge alone, changed leaves issues out and makes no label", async () => {

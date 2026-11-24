@@ -61,7 +61,8 @@ plugin's settings folder, with `assigned` on:
 { "simon/app": { "assigned": true } }
 ```
 
-It is off for any repository not in the file, and without the file. GitHub does the
+The name matches whatever its case, as on GitHub. It is off for any repository not in the
+file, and without the file. GitHub does the
 filtering, in the same query, so it costs no request more. Closed issues updated since the
 last poll come only if they are assigned to you too. PRs aren't affected.
 

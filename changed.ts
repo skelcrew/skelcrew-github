@@ -269,7 +269,8 @@ function listQuery(
 
 // Returns whether the repository's tracker passes on only the issues assigned to you, as
 // `assigned: true` under its name in repositories.json, in the plugin's settings folder, says.
-// Off without the file, or without the repository in it.
+// Off without the file, or without the repository in it. The name matches whatever its case,
+// as GitHub's repository names do, so two names in the file that differ only in case fail.
 function assignedOnly(repository: string): boolean {
   const file = join(settingsDir(), "repositories.json");
   if (!existsSync(file)) return false;
@@ -280,12 +281,16 @@ function assignedOnly(repository: string): boolean {
   } catch (error) {
     throw new Error(`the plugin's repositories.json isn't JSON: ${String(error)}`);
   }
-  const mine = record(saved, "the plugin's repositories.json")[repository];
-  if (mine === undefined) return false;
-  const assigned = record(mine, `${repository} in repositories.json`).assigned;
+  const all = record(saved, "the plugin's repositories.json");
+  const names = Object.keys(all).filter((name) => name.toLowerCase() === repository.toLowerCase());
+  if (names.length > 1)
+    throw new Error(`repositories.json names ${repository} more than once: ${names.join(", ")}`);
+  const [name] = names;
+  if (name === undefined) return false;
+  const assigned = record(all[name], `${name} in repositories.json`).assigned;
   if (assigned === undefined) return false;
   if (typeof assigned !== "boolean")
-    throw new Error(`assigned for ${repository} in repositories.json isn't true or false`);
+    throw new Error(`assigned for ${name} in repositories.json isn't true or false`);
   return assigned;
 }
 
